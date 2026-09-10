@@ -112,5 +112,5 @@ npm run dev
 
 | 문서 | 설명 |
 |---|---|
-| [docs/PRD.md](docs/PRD.md) | 제품 요구사항 |
+| [docs/prd.md](docs/prd.md) | 제품 요구사항 |
 | [docs/화면설계서.md](docs/화면설계서.md) | 화면별 UI/UX · AC |
