@@ -1,32 +1,5 @@
 import type { Note } from "@/lib/types/note";
-
-const DB_NAME = "meetingai";
-const DB_VERSION = 1;
-const NOTES_STORE = "notes";
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(NOTES_STORE)) {
-        const store = db.createObjectStore(NOTES_STORE, { keyPath: "id" });
-        store.createIndex("meetingId", "meetingId", { unique: false });
-      }
-    };
-  });
-}
-
-function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed"));
-  });
-}
+import { NOTES_STORE, openDb, requestToPromise } from "@/lib/storage/db";
 
 export async function getNotesByMeeting(meetingId: string): Promise<Note[]> {
   const db = await openDb();
@@ -34,6 +7,14 @@ export async function getNotesByMeeting(meetingId: string): Promise<Note[]> {
   const store = tx.objectStore(NOTES_STORE);
   const index = store.index("meetingId");
   const notes = await requestToPromise(index.getAll(meetingId));
+  db.close();
+  return notes as Note[];
+}
+
+export async function getAllNotes(): Promise<Note[]> {
+  const db = await openDb();
+  const tx = db.transaction(NOTES_STORE, "readonly");
+  const notes = await requestToPromise(tx.objectStore(NOTES_STORE).getAll());
   db.close();
   return notes as Note[];
 }
@@ -46,6 +27,7 @@ export async function putNote(note: Note) {
 }
 
 export async function putNotes(notes: Note[]) {
+  if (notes.length === 0) return;
   const db = await openDb();
   const tx = db.transaction(NOTES_STORE, "readwrite");
   const store = tx.objectStore(NOTES_STORE);
@@ -58,4 +40,25 @@ export async function deleteNote(noteId: string) {
   const tx = db.transaction(NOTES_STORE, "readwrite");
   await requestToPromise(tx.objectStore(NOTES_STORE).delete(noteId));
   db.close();
+}
+
+export async function deleteNotesByMeeting(meetingId: string) {
+  const notes = await getNotesByMeeting(meetingId);
+  if (notes.length === 0) return;
+  const db = await openDb();
+  const tx = db.transaction(NOTES_STORE, "readwrite");
+  const store = tx.objectStore(NOTES_STORE);
+  await Promise.all(notes.map((note) => requestToPromise(store.delete(note.id))));
+  db.close();
+}
+
+export async function findMeetingIdsByNoteQuery(query: string): Promise<string[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const notes = await getAllNotes();
+  const ids = new Set<string>();
+  for (const note of notes) {
+    if (note.content.toLowerCase().includes(q)) ids.add(note.meetingId);
+  }
+  return [...ids];
 }

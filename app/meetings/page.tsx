@@ -1,5 +1,5 @@
 import { MeetingList } from "@/components/meeting/MeetingList";
 
-export default function Home() {
+export default function MeetingsPage() {
   return <MeetingList />;
 }
