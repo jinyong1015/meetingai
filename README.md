@@ -1,36 +1,116 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI 회의노트
 
-## Getting Started
+회의 음성을 녹음하고, 메모와 함께 AI 회의록을 만드는 웹 앱입니다.  
+기준 문서: [`docs/PRD.md`](docs/PRD.md), [`docs/화면설계서.md`](docs/화면설계서.md)
 
-First, run the development server:
+---
+
+## 전체 진행률
+
+| 구분 | 진행률 | 설명 |
+|---|---:|---|
+| **P0 MVP (출시 필수)** | **약 12%** | 메모·녹음 화면 뼈대까지 |
+| P1 (후속) | 0% | 미착수 |
+| P2 / Future | 0% | 미착수 |
+
+> 진행률은 화면설계서 **P0 필수 항목**을 기준으로 산정했습니다.  
+> (SCR-01~06 + 녹음·메모·AI·검토·설정·웹훅 등)
+
+---
+
+## 진행 목차 (P0)
+
+### 1. 기반 작업 — 완료
+- [x] Next.js 프로젝트 구성
+- [x] PRD / 화면설계서 문서
+- [x] 공통 UI 톤 (글래스·틸 액센트)
+
+### 2. SCR-01 회의 목록 — 약 10%
+- [x] 홈 랜딩 (`/`) · 새 회의 진입
+- [ ] 회의 카드 목록
+- [ ] 검색 · 기간 · 상태 · 확정 필터
+- [ ] 삭제 · 내보내기
+
+### 3. SCR-02 새 회의 / 녹음 — 약 35%
+- [x] 새 회의 화면 (`/meetings/new`)
+- [x] 녹음 상태 UI (시작 · 일시정지 · 재개 · 종료)
+- [x] 경과 시간 타이머 (일시정지 제외)
+- [ ] 실제 마이크 녹음 (`MediaRecorder`)
+- [ ] 마이크 선택 · 입력 레벨
+- [ ] 음성 조각 로컬 저장 · 복구
+- [ ] 녹음 종료 확인 모달
+- [ ] AI 외부 전송 동의 UX
+
+### 4. 메모 입력 (NOTE-01~05) — 약 90%
+- [x] 메모 추가 · 수정 · 삭제
+- [x] 회의당 20,000자 제한
+- [x] 녹음 중 시점 표시
+- [x] 중요 · AI 반영 토글
+- [x] 자동 저장 (1초 / 최대 5초)
+- [x] 저장 상태 표시 (저장 중 · 저장됨 · 실패 · 재시도)
+- [x] IndexedDB 로컬 저장 · 새로고침 복원
+- [ ] 시점 클릭 시 실제 음성 위치 이동 (재생기 연동 후)
+
+### 5. SCR-03 AI 처리 — 0%
+- [ ] AssemblyAI 전사
+- [ ] GPT 요약 생성
+- [ ] GPT 상세 회의록 생성
+- [ ] 처리 단계 · 진행률 UI
+
+### 6. SCR-04 회의 결과 / 검토 — 0%
+- [ ] 요약 · 상세 · 전사문 조회
+- [ ] 원본 음성 재생 · 다운로드
+- [ ] 사용자 수정 · 확정
+- [ ] 버전 관리 · 근거 재생
+
+### 7. SCR-05 설정 — 0%
+- [ ] 일반 설정
+- [ ] AI 프롬프트 관리
+- [ ] 저장 · 백업 · 복원
+
+### 8. SCR-06 외부 연동 — 0%
+- [ ] 웹훅 수신처 설정
+- [ ] 확정본 전송 · 이력
+
+---
+
+## 현재까지 만든 것 (요약)
+
+| 경로 | 내용 |
+|---|---|
+| `/` | 홈 · 새 회의 시작 |
+| `/meetings/new` | 녹음 UI + 메모 섹션 |
+| `components/note/*` | 메모 에디터 · 목록 · 저장 표시 |
+| `lib/hooks/useNotes.ts` | 메모 상태 · 자동 저장 |
+| `lib/storage/notes.ts` | IndexedDB 메모 저장 |
+
+**아직 없음:** 실제 음성 녹음/재생, 회의 목록, AI 전사·요약, 검토·확정, 설정, 웹훅
+
+---
+
+## 로컬 실행
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+브라우저에서 `http://localhost:3000` 접속
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 다음에 할 일 (권장 순서)
 
-## Learn More
+1. **실제 마이크 녹음** + 로컬 음성 저장 · 재생  
+2. **SCR-01 회의 목록**  
+3. 녹음 종료 → AI 동의 → **SCR-03 / SCR-04**  
+4. **SCR-05 설정** · **SCR-06 웹훅**
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 문서
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| 문서 | 설명 |
+|---|---|
+| [docs/PRD.md](docs/PRD.md) | 제품 요구사항 |
+| [docs/화면설계서.md](docs/화면설계서.md) | 화면별 UI/UX · AC |
