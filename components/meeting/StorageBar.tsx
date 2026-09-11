@@ -58,8 +58,8 @@ export function StorageBar({ usage, quota, onRestored }: StorageBarProps) {
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-4 text-sm text-[var(--muted)]">
         <p>
-          저장 공간 {formatBytes(usage)} 사용
-          {quota > 0 ? ` · ${formatBytes(quota)} 중` : ""}
+          회의 데이터 {formatBytes(usage)} 사용
+          {quota > 0 ? ` · 브라우저 한도 ${formatBytes(quota)}` : ""}
         </p>
         <button
           type="button"
@@ -90,12 +90,15 @@ export function StorageBar({ usage, quota, onRestored }: StorageBarProps) {
               백업 관리
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
-              회의 데이터는 현재 브라우저에 저장됩니다. 브라우저 데이터를
-              삭제하면 회의 기록이 삭제될 수 있습니다.
+              회의·메모는 이 브라우저 IndexedDB에 저장됩니다. 아래 사용량은
+              회의 데이터 추정값이며, 브라우저 개발 캐시 등 다른 저장은
+              포함하지 않습니다.
             </p>
             <p className="mt-2 text-sm text-[var(--muted)]">
-              사용 중 {formatBytes(usage)}
-              {quota > 0 ? ` · 예상 사용 가능 ${formatBytes(Math.max(0, quota - usage))}` : ""}
+              회의 데이터 {formatBytes(usage)}
+              {quota > 0
+                ? ` · 브라우저 한도 ${formatBytes(quota)}`
+                : ""}
             </p>
             <div className="mt-5 flex flex-col gap-2">
               <button

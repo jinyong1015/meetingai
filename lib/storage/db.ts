@@ -1,8 +1,10 @@
 const DB_NAME = "meetingai";
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 
 export const NOTES_STORE = "notes";
 export const MEETINGS_STORE = "meetings";
+export const SETTINGS_STORE = "settings";
+export const TRANSCRIPTS_STORE = "transcripts";
 
 export function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -24,6 +26,14 @@ export function openDb(): Promise<IDBDatabase> {
       if (oldVersion < 2 && !db.objectStoreNames.contains(MEETINGS_STORE)) {
         const store = db.createObjectStore(MEETINGS_STORE, { keyPath: "id" });
         store.createIndex("startedAt", "startedAt", { unique: false });
+      }
+
+      if (oldVersion < 3 && !db.objectStoreNames.contains(SETTINGS_STORE)) {
+        db.createObjectStore(SETTINGS_STORE, { keyPath: "id" });
+      }
+
+      if (oldVersion < 4 && !db.objectStoreNames.contains(TRANSCRIPTS_STORE)) {
+        db.createObjectStore(TRANSCRIPTS_STORE, { keyPath: "meetingId" });
       }
     };
   });

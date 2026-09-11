@@ -52,6 +52,20 @@ export async function deleteNotesByMeeting(meetingId: string) {
   db.close();
 }
 
+/** Removes notes whose meeting no longer exists (e.g. leftover from early builds). */
+export async function deleteOrphanNotes(validMeetingIds: Set<string>): Promise<number> {
+  const notes = await getAllNotes();
+  const orphans = notes.filter((note) => !validMeetingIds.has(note.meetingId));
+  if (orphans.length === 0) return 0;
+
+  const db = await openDb();
+  const tx = db.transaction(NOTES_STORE, "readwrite");
+  const store = tx.objectStore(NOTES_STORE);
+  await Promise.all(orphans.map((note) => requestToPromise(store.delete(note.id))));
+  db.close();
+  return orphans.length;
+}
+
 export async function findMeetingIdsByNoteQuery(query: string): Promise<string[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
