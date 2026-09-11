@@ -90,6 +90,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
 
   const {
     levels,
+    voiceActive,
     error: micError,
     phase: micPhase,
     stream: micStream,
@@ -492,6 +493,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
               <AudioWaveform
                 levels={levels}
                 active={recordingState === "recording"}
+                voiceActive={voiceActive}
                 className="min-w-0 flex-1 justify-center"
               />
               <span className="shrink-0 text-xs font-medium tabular-nums text-[var(--muted)]">
