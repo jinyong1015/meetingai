@@ -5,7 +5,7 @@ import { flushSync } from "react-dom";
 import Link from "next/link";
 import { NoteSection } from "@/components/note/NoteSection";
 import { AudioWaveform } from "@/components/recording/AudioWaveform";
-import { TranscriptResultPanel } from "@/components/recording/TranscriptResultPanel";
+import { MeetingResultTabs } from "@/components/review/MeetingResultTabs";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { useAppSettings } from "@/lib/hooks/useAppSettings";
 import { useMeetingRecorder } from "@/lib/hooks/useMeetingRecorder";
@@ -13,12 +13,26 @@ import {
   useMicAnalyser,
   type MicAnalyserError,
 } from "@/lib/hooks/useMicAnalyser";
+import {
+  VIRTUAL_DETAIL_MINUTES,
+  VIRTUAL_DETAIL_TEXT,
+  VIRTUAL_SUMMARY_TEXT,
+  VIRTUAL_TRANSCRIPT_SEGMENTS,
+} from "@/lib/mocks/virtualMeetingResult";
+import {
+  deleteMeetingGeneration,
+  getMeetingGeneration,
+  saveMeetingGeneration,
+} from "@/lib/storage/generations";
 import { getMeeting, patchMeeting } from "@/lib/storage/meetings";
 import {
   deleteMeetingTranscript,
   getMeetingTranscript,
   saveMeetingTranscript,
 } from "@/lib/storage/transcripts";
+import type { MeetingDetailMinutes } from "@/lib/types/detail";
+import { formatDetailMinutesText } from "@/lib/types/detail";
+import type { MeetingResultTab } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
 import { sttProviderLabel } from "@/lib/types/settings";
 import type { TranscriptSegment } from "@/lib/types/transcript";
@@ -70,6 +84,20 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const [showReview, setShowReview] = useState(false);
   const [sttPending, setSttPending] = useState(false);
   const [sttError, setSttError] = useState<string | null>(null);
+  const [resultTab, setResultTab] = useState<MeetingResultTab>("transcript");
+  const [summaryText, setSummaryText] = useState<string | null>(null);
+  const [detailText, setDetailText] = useState<string | null>(null);
+  const [detailMinutes, setDetailMinutes] =
+    useState<MeetingDetailMinutes | null>(null);
+  const [summarySourceLabel, setSummarySourceLabel] = useState<string | null>(
+    null,
+  );
+  const [generationSource, setGenerationSource] = useState<"mock" | "llm">(
+    "llm",
+  );
+  const [summaryPending, setSummaryPending] = useState(false);
+  const [detailPending, setDetailPending] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
 
   const startedAtRef = useRef<number | null>(null);
   const accumulatedRef = useRef(0);
@@ -106,9 +134,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     let cancelled = false;
 
     async function load() {
-      const [loaded, transcript] = await Promise.all([
+      const [loaded, transcript, generation] = await Promise.all([
         getMeeting(meetingId),
         getMeetingTranscript(meetingId),
+        getMeetingGeneration(meetingId),
       ]);
       if (cancelled) return;
       if (!loaded) {
@@ -120,9 +149,24 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       setTitle(loaded.title);
       accumulatedRef.current = loaded.durationSec;
       setElapsedSec(loaded.durationSec);
-      if (transcript?.segments?.length) {
-        setReviewSegments(transcript.segments);
+      if (generation) {
+        setSummaryText(generation.summaryText);
+        setDetailText(generation.detailText);
+        setDetailMinutes(generation.detailMinutes ?? null);
+        setSummarySourceLabel(
+          generation.source === "mock" ? "가상 데이터 미리보기" : null,
+        );
+        setGenerationSource(generation.source);
+      }
+      if (
+        transcript?.segments?.length ||
+        generation?.summaryText ||
+        generation?.detailMinutes ||
+        generation?.detailText
+      ) {
+        setReviewSegments(transcript?.segments ?? []);
         setShowReview(true);
+        setResultTab("transcript");
       }
       if (loaded.displayStatus === "녹음 중") {
         void patchMeeting(meetingId, { displayStatus: "준비" }).then((next) => {
@@ -268,7 +312,14 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     setShowReview(false);
     setSttError(null);
     setSttPending(false);
+    setSummaryText(null);
+    setDetailText(null);
+    setDetailMinutes(null);
+    setSummarySourceLabel(null);
+    setGenerationSource("llm");
+    setResultTab("transcript");
     void deleteMeetingTranscript(meetingId);
+    void deleteMeetingGeneration(meetingId);
     startedAtRef.current = Date.now();
     accumulatedRef.current = 0;
     setElapsedSec(0);
@@ -326,6 +377,80 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     }
 
     await transcribeRecording(audio);
+  }
+
+  async function previewSummaryWithVirtualData() {
+    if (recordingState !== "idle" || previewBusy || sttPending) return;
+    setPreviewBusy(true);
+    setSummaryPending(true);
+    setDetailPending(true);
+    setSttError(null);
+    setShowReview(true);
+    setResultTab("transcript");
+
+    try {
+      const segments = VIRTUAL_TRANSCRIPT_SEGMENTS.map((segment) => ({
+        ...segment,
+        id: `${meetingId}-${segment.id}`,
+      }));
+
+      setReviewSegments(segments);
+      await saveMeetingTranscript({
+        meetingId,
+        segments,
+        provider: "mock",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      const summary = VIRTUAL_SUMMARY_TEXT;
+      setSummaryText(summary);
+      setSummarySourceLabel("가상 데이터 미리보기");
+      setGenerationSource("mock");
+      setSummaryPending(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      const detail = VIRTUAL_DETAIL_MINUTES;
+      const detailBody = VIRTUAL_DETAIL_TEXT;
+      setDetailMinutes(detail);
+      setDetailText(detailBody);
+      await saveMeetingGeneration({
+        meetingId,
+        summaryText: summary,
+        detailText: detailBody,
+        detailMinutes: detail,
+        source: "mock",
+      });
+      await persist({
+        summaryPreview:
+          summary.split("\n").find((line) => line.trim()) ?? summary,
+        displayStatus: "검토 필요",
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "미리보기에 실패했습니다. 페이지를 새로고침해 주세요.";
+      setSttError(message);
+      setResultTab("transcript");
+    } finally {
+      setSummaryPending(false);
+      setDetailPending(false);
+      setPreviewBusy(false);
+    }
+  }
+
+  async function handleSaveDetail(next: MeetingDetailMinutes) {
+    const detailBody = formatDetailMinutesText(next);
+    setDetailMinutes(next);
+    setDetailText(detailBody);
+    await saveMeetingGeneration({
+      meetingId,
+      detailText: detailBody,
+      detailMinutes: next,
+      source: generationSource,
+    });
   }
 
   const recordingElapsedSec =
@@ -440,7 +565,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                 <button
                   type="button"
                   onClick={() => void startRecording()}
-                  disabled={micBusy || sttPending}
+                  disabled={micBusy || sttPending || previewBusy}
                   className="btn btn-danger px-5 py-2.5"
                 >
                   {micBusy ? "마이크 연결 중…" : "녹음 시작"}
@@ -485,6 +610,29 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             </div>
           </div>
 
+          {recordingState === "idle" && (
+            <div className="mt-4 flex flex-col gap-3 rounded-2xl bg-[var(--accent-soft)] px-4 py-3 ring-1 ring-[var(--border)] sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-[var(--foreground)]">
+                  녹음 없이 요약·상세 화면 확인
+                </p>
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--muted)]">
+                  가상 전사 데이터로 요약과 상세 회의록 결과를 미리볼 수 있습니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void previewSummaryWithVirtualData()}
+                disabled={micBusy || sttPending || previewBusy}
+                className="btn btn-accent shrink-0 px-4 py-2.5"
+              >
+                {previewBusy
+                  ? "미리보기 준비 중…"
+                  : "가상 데이터로 미리보기"}
+              </button>
+            </div>
+          )}
+
           {(recordingState === "recording" || recordingState === "paused") && (
             <div className="mt-4 flex items-center gap-3 rounded-2xl bg-[var(--danger-soft)]/60 px-4 py-3 ring-1 ring-[var(--border)]">
               <span className="shrink-0 text-xs font-medium text-[var(--muted)]">
@@ -523,7 +671,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           <p className="mt-3 text-xs text-[var(--muted)]">
             선택한 마이크로 입력되는 소리만 녹음됩니다
             {recordingState === "idle"
-              ? " · 녹음 종료 후 선택한 STT로 음성을 텍스트로 변환합니다"
+              ? " · 녹음 종료 후 STT 변환, 또는 가상 데이터로 요약 미리보기를 확인할 수 있습니다"
               : " · 녹음이 끝난 뒤 음성 인식 결과가 표시됩니다"}
           </p>
 
@@ -563,11 +711,25 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       >
         <div className="flex min-w-0 flex-col gap-6">
           {showReview && recordingState === "idle" && (
-            <TranscriptResultPanel
+            <MeetingResultTabs
+              activeTab={resultTab}
+              onTabChange={setResultTab}
               segments={reviewSegments}
-              providerLabel={sttProviderLabel(sttProvider)}
-              pending={sttPending}
-              error={sttError}
+              providerLabel={
+                reviewSegments[0]?.provider === "mock"
+                  ? "가상 데이터"
+                  : sttProviderLabel(sttProvider)
+              }
+              transcriptPending={sttPending}
+              transcriptError={sttError}
+              summaryText={summaryText}
+              detailMinutes={detailMinutes}
+              detailText={detailText}
+              summaryPending={summaryPending}
+              detailPending={detailPending}
+              summarySourceLabel={summarySourceLabel}
+              detailSourceLabel={summarySourceLabel}
+              onSaveDetail={handleSaveDetail}
             />
           )}
 

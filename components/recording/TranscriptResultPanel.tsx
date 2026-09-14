@@ -9,6 +9,8 @@ type TranscriptResultPanelProps = {
   /** Still waiting for the last STT chunk after stop. */
   pending?: boolean;
   error?: string | null;
+  /** When true, omit outer glass panel (used inside result tabs). */
+  embedded?: boolean;
 };
 
 export function TranscriptResultPanel({
@@ -16,18 +18,20 @@ export function TranscriptResultPanel({
   providerLabel,
   pending = false,
   error = null,
+  embedded = false,
 }: TranscriptResultPanelProps) {
   const fullText = segments.map((segment) => segment.text).join("\n");
 
-  return (
-    <section
-      className="glass-panel rounded-[var(--radius)] p-5 sm:p-6"
-      aria-label="음성 인식 결과"
-    >
+  const body = (
+    <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight">
-            음성 인식 결과
+          <h2
+            className={`font-[family-name:var(--font-display)] font-bold tracking-tight ${
+              embedded ? "text-base" : "text-lg"
+            }`}
+          >
+            {embedded ? "전사문" : "음성 인식 결과"}
           </h2>
           <p className="mt-1 text-xs text-[var(--muted)]">
             녹음이 끝난 뒤 저장된 전사입니다 · {providerLabel}
@@ -77,6 +81,19 @@ export function TranscriptResultPanel({
           {error}
         </p>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return <div aria-label="전사문">{body}</div>;
+  }
+
+  return (
+    <section
+      className="glass-panel rounded-[var(--radius)] p-5 sm:p-6"
+      aria-label="음성 인식 결과"
+    >
+      {body}
     </section>
   );
 }
