@@ -2,10 +2,10 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v0.3.4 |
+| 문서 버전 | v0.3.5 |
 | 작성일 | 2026년 9월 10일 |
 | 최종 수정일 | 2026년 9월 14일 |
-| 개정 기준 | PRD v0.3.3 + 회의 결과 탭·가상 미리보기·상세 수정·`generations` 정합 |
+| 개정 기준 | PRD v0.3.4 + SCR-01/02 잔여·로컬 faster-whisper·AI 동의·음성 조각/재생·IndexedDB 저장 위치 정합 |
 | 문서 상태 | 개발·디자인·QA·마케팅 검토용 초안 |
 | 제품명 | AI 회의노트 — 가칭 |
 | 초기 출시 범위 | 웹 기반, 단일 사용자, 한국어 회의, 로컬 데이터 저장, STT·LLM 엔진 선택 |
@@ -54,19 +54,21 @@
 
 **로컬 저장의 의미**
 
-회의 데이터의 제품 내 보관 위치는 로컬이다. AI 처리는 설정의 **STT·LLM 엔진 선택**에 따라 로컬 또는 외부 서비스를 사용한다.
+회의 데이터의 제품 내 보관 위치는 **브라우저 IndexedDB(로컬)** 이다. AI 처리는 설정의 **STT·LLM 엔진 선택**에 따라 로컬 또는 외부 서비스를 사용한다.
 
 ```text
 MeetingAI
 ├── STT (음성→텍스트)
-│   ├── Whisper     … 로컬 전사
-│   └── AssemblyAI  … 클라우드 전사
+│   ├── Whisper     … 로컬 faster-whisper (`whisper-server` · OpenAI API 미사용)
+│   └── AssemblyAI  … 클라우드 Pre-recorded (선택)
 └── LLM (요약·상세 회의록)
     ├── Ollama      … 로컬 생성
     └── OpenAI      … 클라우드 생성
 ```
 
-AssemblyAI를 선택하면 음성이 외부로, OpenAI를 선택하면 전사문·선택한 메모가 외부로 전송된다. Whisper·Ollama만 사용하는 경우에는 해당 단계의 외부 전송이 없다. 따라서 **‘로컬 저장’과 ‘외부 전송 없음’을 동일하게 안내해서는 안 되며**, 실제 선택 엔진에 맞춰 전송 대상을 안내한다. 클라우드 제공업체의 데이터 보관 정책도 별도로 적용된다. 
+AssemblyAI를 선택하면 음성이 외부로, OpenAI를 선택하면 전사문·선택한 메모가 외부로 전송된다. Whisper·Ollama만 사용하는 경우에는 해당 단계의 외부 전송이 없다. 따라서 **‘로컬 저장’과 ‘외부 전송 없음’을 동일하게 안내해서는 안 되며**, 실제 선택 엔진에 맞춰 전송 대상을 안내한다. 클라우드 제공업체의 데이터 보관 정책도 별도로 적용된다.
+
+**저장 위치 구분:** 회의·메모·음성 Blob·전사문·AI 결과는 IndexedDB(`meetingai`)에 둔다. Whisper **모델 가중치**만 PC 디스크(`whisper-server/models`)에 두며, 회의 본문을 프로젝트 폴더나 모델 디렉터리에 파일로 저장하지 않는다. 
 
 ### 1.3 대상 사용자
 
@@ -207,9 +209,11 @@ STT는 설정의 Whisper 또는 AssemblyAI, LLM은 Ollama 또는 OpenAI 중 현�
 
 #### B. 음성의 텍스트 변환 (STT)
 
-STT 엔진은 설정에서 **Whisper(로컬)** 또는 **AssemblyAI(클라우드)** 중 하나를 선택한다. 기본 구현·초기 검증 기준은 AssemblyAI이며, Whisper는 동일 인터페이스로 교체 가능해야 한다.
+STT 엔진은 설정에서 **Whisper(로컬)** 또는 **AssemblyAI(클라우드)** 중 하나를 선택한다. **기본 구현·초기 검증 기준은 Whisper(로컬 faster-whisper)** 이며, AssemblyAI는 동일 인터페이스로 교체 가능해야 한다.
 
-**처리 시점:** STT는 **녹음 종료 후**에만 실행한다. 녹음 중 실시간 자막(Realtime Streaming)은 MVP 범위에서 제외한다(P2).
+**처리 시점:** STT는 **녹음 종료 후 · AI 처리 동의 후**에만 실행한다. 녹음 중 실시간 자막(Realtime Streaming)은 MVP 범위에서 제외한다(P2). `[음성만 저장]`을 선택하면 STT를 호출하지 않는다.
+
+**Whisper 연동 방식(현재):** 저장소 `whisper-server/`의 faster-whisper가 `127.0.0.1:8080`에서 OpenAI 호환 `POST /v1/audio/transcriptions`를 제공한다. Next.js는 `WHISPER_API_URL`로 이 로컬 서버에만 중계하며 **OpenAI 클라우드 Whisper API는 사용하지 않는다.** 모델 크기·디바이스는 `WHISPER_MODEL`·서버 환경변수로 분리한다(기본 `small` · CPU · int8).
 
 **AssemblyAI 연동 방식:** 클라우드 STT는 **Pre-recorded API만** 사용한다 (`POST /v2/upload` → `POST /v2/transcript` → 상태 폴링). Realtime WebSocket(`streaming.assemblyai.com`)은 사용하지 않는다. 한국어 검증 모델은 `speech_models: ["universal-2"]`, `language_code: "ko"`이다.
 
@@ -221,7 +225,7 @@ STT 엔진은 설정에서 **Whisper(로컬)** 또는 **AssemblyAI(클라우드)
 | AI-04 | 전사 원문과 수정본을 구분한다. | 원문을 보존하며, 이후 생성에는 사용자가 선택한 최신 수정본을 사용한다. |
 | AI-05 | 기존 전사 작업을 재조회할 수 있다. | 저장된 전사 ID(또는 로컬 작업 키)가 있는 경우 새 요청을 만들지 않고 해당 작업의 상태를 조회한다. |
 
-AssemblyAI의 지원 언어는 모델별로 다르므로 최신 모델이라는 이유만으로 한국어 지원을 가정하지 않는다. Whisper는 로컬에서 음성을 처리하며 외부 업로드가 없다. Whisper 모델 크기·런타임(예: whisper.cpp, 로컬 Whisper 서버)은 `WHISPER_*` 서버 설정으로 분리한다.
+AssemblyAI의 지원 언어는 모델별로 다르므로 최신 모델이라는 이유만으로 한국어 지원을 가정하지 않는다. Whisper는 로컬 faster-whisper 프로세스에서 음성을 처리하며 외부(OpenAI 등) 업로드가 없다. Whisper 모델 크기·런타임은 `WHISPER_*` 및 `whisper-server` 설정으로 분리한다.
 
 화자 구분은 ‘누가 말했는지에 따라 구간을 나누는 기능’이다. 기본 화자 라벨이 실제 사람 이름을 의미하지 않으므로, 참석자 명단만으로 화자 이름을 자동 확정하지 않는다. 
 
@@ -264,7 +268,7 @@ GPT/Ollama 출력은 Structured Outputs(또는 동등한 JSON 스키마 강제)�
 | SET-04 | 프롬프트 변경 이력을 관리한다. | 저장 시 버전을 증가시키고, 생성 결과에 사용한 버전을 기록한다. |
 | SET-05 | 샘플 입력으로 시험 생성할 수 있다. | 선택한 LLM이 클라우드인 경우 실제 외부 API 호출·비용 가능성을 실행 전에 표시한다. Ollama인 경우 로컬 호출임을 표시한다. |
 | SET-06 | 일반 설정을 제공한다. | 시간대, 자동 생성, 기본 화면 테마, 외부 전송 설정이 재실행 후 유지된다. |
-| SET-07 | STT 엔진을 선택한다. | Whisper 또는 AssemblyAI 중 하나를 저장·복원하며, 생성 실행에 사용한 엔진을 기록한다. |
+| SET-07 | STT 엔진을 선택한다. | Whisper(로컬 faster-whisper) 또는 AssemblyAI 중 하나를 저장·복원하며, 생성 실행에 사용한 엔진을 기록한다. 기본값은 Whisper. |
 | SET-08 | LLM 엔진을 선택한다. | Ollama 또는 OpenAI 중 하나를 저장·복원하며, 생성 실행에 사용한 엔진·모델 ID를 기록한다. |
 
 **AI 엔진 선택 구조**
@@ -438,7 +442,8 @@ GPT 응답을 로컬에 저장하기 전에 탭이 닫힌 경우에도 결과 �
 | 저장 단위 | 주요 필드 | 용도 |
 |---|---|---|
 | `meetings` | ID, 제목, 일시, 시간대, 참석자, 태그, 입력 버전, 확정 버전 | 회의 기본 정보 |
-| `audioChunks` | 회의 ID, 녹음 세션 ID, 순번, Blob, 저장 시각 | 음성 조각 및 복구 정보 |
+| `audioChunks` | 회의 ID, 녹음 세션 ID, 순번, Blob, 저장 시각 | 음성 조각 및 복구 정보 (**구현**) |
+| `meetingAudio` | 회의 ID, 세션 ID, 결합 Blob, mime, 길이 | 원본 재생·다운로드용 최종 음성 (**구현**) |
 | `notes` | 메모 ID, 본문, 음성 시점, 중요 여부, AI 반영 여부 | 사용자 메모 |
 | `transcripts` | 회의 ID, 구간 목록, 전체 텍스트, STT 엔진, 갱신 시각 | 녹음 종료 후 전사 결과 (현재: 회의당 1건) |
 | `generations` | 회의 ID, `summaryText`, `detailText`, `detailMinutes`(구조화 상세), `source`(mock\|llm), 갱신 시각 | 요약·상세 회의록 (현재: 회의당 최신 1건 · 이력/버전은 후속) |
@@ -588,7 +593,7 @@ AI 회의노트
 
 제목은 공백만 입력해도 미입력으로 보고 `새 회의 YYYY-MM-DD HH:mm`을 적용한다. 제목 120자 초과, 유효하지 않은 일시, 태그 10개/각 20자 초과는 해당 필드에서 안내하고 저장을 막는다. 일시 기본값은 현재 시각이며 시간대는 브라우저(또는 설정값)를 사용한다. 참석자는 자유 입력이며 AI 화자 라벨과 자동 연결하지 않는다. 저장 실패 시 입력값을 유지하고 재시도한다. 중복 클릭해도 회의는 1건만 생성한다.
 
-회의 생성 후 마이크 권한·입력 수준·녹음 안내를 표시한다. 마이크 권한 요청은 사용자 녹음 시작 행동과 연결하고, [녹음 시작]은 권한·장치 조건을 만족할 때만 실행한다. 녹음 제어와 메모는 같은 작업 영역에 둔다. 일시정지 중에는 [재개]와 [종료]를 제공한다. 녹음 중 입력 웨이브는 `AnalyserNode`로 실시간 레벨을 측정하되, **음성이 감지될 때만** 파형이 반응한다(실시간 전사가 아님). **녹음 중 실시간 전사는 하지 않으며**, 녹음 종료 후 선택한 STT(Pre-recorded)로 음성을 텍스트로 변환해 결과 패널에 표시한다.
+회의 생성 후 마이크 권한·입력 수준·녹음 안내를 표시한다. 마이크 권한 요청은 사용자 녹음 시작(또는 입력 확인) 행동과 연결하고, [녹음 시작]은 권한·장치 조건을 만족할 때만 실행한다. **마이크 장치 선택**과 입력 확인 웨이브를 제공한다. 녹음 제어와 메모는 같은 작업 영역에 둔다. 일시정지 중에는 [재개]와 [종료]를 제공한다. 녹음 중 입력 웨이브는 `AnalyserNode`로 실시간 레벨을 측정하되, **음성이 감지될 때만** 파형이 반응한다(실시간 전사가 아님). **녹음 중 실시간 전사는 하지 않으며**, 녹음 종료 → 음성 조각/원본 IndexedDB 저장 → **AI 처리 동의** 후 선택한 STT로 음성을 텍스트로 변환해 결과 패널에 표시한다.
 
 녹음 중 메모 시점은 일시정지 시간을 제외한 오디오 타임라인을 사용한다. MVP에서 녹음 중 타임스탬프는 기록하되 재생은 녹음 종료·저장 완료 후 제공하여 재생음이 녹음에 재유입되지 않게 한다. 시점 없는 메모는 오디오 이동을 제공하지 않는다.
 
@@ -627,7 +632,7 @@ Whisper+Ollama처럼 외부 전송이 없는 조합에서는 전송 목록 대�
 
 아래 결과 탭은 **전사문 · 요약 · 상세** 순으로 구성한다(기본 선택 탭은 전사문). 목표 화면에는 이력·외부 연동 탭도 포함하며, 확정·웹훅은 후속이다.
 
-**현재 구현(임시 배치):** 전용 Route `/meetings/{meetingId}` 대신 녹음 화면(`/meetings/{meetingId}/record`)에 결과 탭을 제공한다. 녹음 없이 UI를 확인할 수 있도록 **가상 데이터 미리보기**로 요약·상세를 채울 수 있다. 실제 LLM(Ollama·OpenAI) 생성은 미구현이다.
+**현재 구현(임시 배치):** 전용 Route `/meetings/{meetingId}` 대신 녹음 화면(`/meetings/{meetingId}/record`)에 결과 탭·**원본 음성 플레이어**를 제공한다. 녹음 없이 UI를 확인할 수 있도록 **가상 데이터 미리보기**로 요약·상세를 채울 수 있다. 실제 LLM(Ollama·OpenAI) 생성은 미구현이다. STT는 AI 동의 후 Whisper(로컬) 또는 AssemblyAI로 실행된다.
 
 | 탭 | 표시 내용 (현재) |
 |---|---|
@@ -888,9 +893,9 @@ SCR-04의 외부 연동 탭에서는 현재 회의의 확정 버전·발송 상�
 | 웹 프레임워크 | Next.js App Router + TypeScript | 화면, 라우팅, 서버 API |
 | 스타일 | Tailwind CSS | 디자인 토큰과 반응형 UI |
 | 녹음 | `getUserMedia` + `MediaRecorder` + `AnalyserNode` | 마이크 접근·음성 수집(우선 `audio/webm;codecs=opus`). 입력 웨이브는 RMS·적응형 노이즈 게이트로 음성 감지 시에만 반응 |
-| STT (선택) | Whisper(로컬) · AssemblyAI Pre-recorded(클라우드) | 녹음 종료 후 한국어 전사. Realtime Streaming 미사용 |
-| LLM (선택) | Ollama(로컬) · OpenAI GPT(클라우드) | 구조화된 요약·상세 회의록 생성 |
-| 로컬 데이터 | IndexedDB (native API · Dexie는 선택) | 회의·메모·settings·transcripts·대기열 저장 |
+| STT (선택) | **Whisper 로컬 faster-whisper**(`whisper-server`) · AssemblyAI Pre-recorded(클라우드) | 녹음 종료·동의 후 한국어 전사. Realtime·OpenAI Whisper API 미사용 |
+| LLM (선택) | Ollama(로컬) · OpenAI GPT(클라우드) | 구조화된 요약·상세 회의록 생성 (어댑터 미구현) |
+| 로컬 데이터 | IndexedDB (native API) | 회의·메모·settings·transcripts·generations·audioChunks·meetingAudio |
 | 서버 실행 | Node.js 런타임 | 비밀키 관리, 엔진 중계, 웹훅 서명 |
 | 데이터 검증 | TypeScript + Zod | 입력·출력 형식 검사 |
 | 테스트 | Vitest + Playwright | 단위 테스트와 브라우저 전체 흐름 테스트 |
@@ -900,7 +905,7 @@ SCR-04의 외부 연동 탭에서는 현재 회의의 확정 버전·발송 상�
 ```text
 MeetingAI
 ├── STT
-│   ├── Whisper
+│   ├── Whisper (faster-whisper · whisper-server :8080)
 │   └── AssemblyAI
 └── LLM
     ├── Ollama
@@ -909,7 +914,7 @@ MeetingAI
 
 STT·LLM은 공통 어댑터 인터페이스로 추상화한다. 설정에서 선택한 엔진만 실행에 사용하며, 생성 결과에는 `sttProvider`·`llmProvider`·모델 ID를 기록한다. Dexie는 IndexedDB를 다루기 위한 도구로 사용하며, Dexie Cloud 동기화는 사용하지 않는다. Next.js의 공식 테스트 가이드를 기준으로 단위 테스트와 브라우저 기반 E2E 테스트를 구성한다. E2E는 실제 사용자 동작을 처음부터 끝까지 검증하는 테스트다.
 
-OpenAI 모델은 `OPENAI_MODEL`을 서버 설정으로 분리한다. 초기 검증 기준은 Responses API와 Structured Outputs를 지원하는 `gpt-4.1-mini-2025-04-14`로 고정하고, 다른 GPT 모델을 채택할 때에는 동일한 품질 평가를 다시 통과하도록 한다. Ollama 모델은 `OLLAMA_MODEL`로 분리하며, Structured Outputs(또는 동등한 JSON 스키마 강제)가 가능한 모델을 초기 검증 기준으로 둔다. Whisper 모델·런타임은 `WHISPER_*` 서버 설정으로 분리한다. 이는 최신 모델이라는 의미가 아니라 **재현 가능한 초기 평가 기준**이다. 
+OpenAI 모델은 `OPENAI_MODEL`을 서버 설정으로 분리한다. 초기 검증 기준은 Responses API와 Structured Outputs를 지원하는 `gpt-4.1-mini-2025-04-14`로 고정하고, 다른 GPT 모델을 채택할 때에는 동일한 품질 평가를 다시 통과하도록 한다. Ollama 모델은 `OLLAMA_MODEL`로 분리하며, Structured Outputs(또는 동등한 JSON 스키마 강제)가 가능한 모델을 초기 검증 기준으로 둔다. Whisper는 **OpenAI API가 아닌** 로컬 `whisper-server`(faster-whisper)이며, 모델·런타임은 `WHISPER_*` 및 `whisper-server` 환경으로 분리한다(기본 `small`). 이는 최신 모델이라는 의미가 아니라 **재현 가능한 초기 평가 기준**이다. 
 
 ### 5.2 클라이언트와 서버 역할 분리
 
@@ -1138,9 +1143,10 @@ PRD는 `docs/PRD.md`, 변경 이력은 `docs/CHANGELOG.md`로 관리하는 것�
 | v0.3.2 | 2026-09-11 | 녹음 MediaRecorder·입력 레벨, 녹음 종료 후 Pre-recorded STT(AssemblyAI universal-2 / Whisper), 설정 STT 선택, Realtime 제외 명시. 화면설계서 v0.5·README와 맞춤 | 구현 중 |
 | v0.3.3 | 2026-09-11 | REC-03 입력 웨이브: 음성 활동 감지(RMS·말소리 대역·적응형 노이즈 게이트) 시에만 반응하도록 정합. 화면설계서 v0.6·README와 맞춤 | 구현 중 |
 | v0.3.4 | 2026-09-14 | 회의 결과 탭(전사문·요약·상세), 가상 데이터 미리보기, 구조화 상세 회의록·사용자 수정, IndexedDB `generations`. 화면설계서 v0.7·README와 맞춤 | 구현 중 |
+| v0.3.5 | 2026-09-14 | SCR-01/02 잔여(검색·cascade 삭제·REC-04/06·AI 동의·마이크 선택). 기본 STT=로컬 faster-whisper(`whisper-server`). IndexedDB vs 모델 디스크 저장 구분. 화면설계서 v0.8·README와 맞춤 | 구현 중 |
 | v1.0 | 승인 후 기록 | MVP 개발 기준선 확정 | 예정 |
 
-이번 v0.3.4는 녹음 화면에서의 결과 검토 UI(요약·상세)·가상 미리보기·상세 수정 저장을 반영한 정합 개정이다. 실제 LLM 어댑터·SCR-03 처리 단계·확정·웹훅 등 미구현 범위의 요구사항은 그대로 유지한다.
+이번 v0.3.5는 녹음·목록의 P0 잔여와 로컬 Whisper 런타임·동의 게이트·음성 저장 위치를 반영한 정합 개정이다. 실제 LLM 어댑터·SCR-03 처리 단계·확정·웹훅 등 미구현 범위의 요구사항은 그대로 유지한다.
 
 변경 요청에는 **변경 사유, 영향받는 요구사항 ID, UI·API·데이터 영향, 일정 영향, 승인자**를 기록한다. 기존 ID는 삭제하여 재사용하지 않고 폐기 또는 대체 관계를 표시한다.
 
@@ -1150,13 +1156,13 @@ PRD 버전, 로컬 데이터 형식 버전, 프롬프트 버전, AI 모델 버�
 
 | 단계 | 구현 범위 | 현재(2026-09-14) | 다음 단계 진입 조건 |
 |---|---|---|---|
-| 1. 데이터 기반 | 회의 생성, IndexedDB, 메모 저장, 백업·복원 | **대부분** — 회의·메모·settings·transcripts·generations·목록 백업 JSON. 음성 Blob·전체 ZIP 백업은 미완 | 새로고침·복원 시험 통과 |
-| 2. 녹음 | 마이크, 녹음 제어, 조각 저장, 원본 재생·복구 | **진행 중** — getUserMedia·MediaRecorder·음성 감지 웨이브(VAD)·일시정지. 조각 저장·재생·다운로드는 미완 | 정상·장애 녹음 시험 통과 |
-| 3. 전사 (STT) | Whisper·AssemblyAI 어댑터, 상태 조회, 화자·시점 표시 | **진행 중** — 종료 후 Pre-recorded 전사·설정 선택·결과 탭 전사문. 화자·비동기 작업 UI는 미완 | 선택한 엔진으로 한국어 평가 파일 처리 성공 |
-| 4. AI 회의록 (LLM) | Ollama·OpenAI 어댑터, 프롬프트, 요약·상세, 근거, 수정·버전 | **부분** — 결과 탭(요약·상세)·가상 미리보기·상세 수정 저장. LLM 어댑터·동의·처리 단계·확정은 미완 | AI 품질 및 기존 결과 보호 시험 통과 |
+| 1. 데이터 기반 | 회의 생성, IndexedDB, 메모 저장, 백업·복원 | **대부분** — 회의·메모·settings·transcripts·generations·audioChunks·meetingAudio·목록 백업 JSON. 전체 ZIP 백업은 미완 | 새로고침·복원 시험 통과 |
+| 2. 녹음 | 마이크, 녹음 제어, 조각 저장, 원본 재생·복구 | **구현** — getUserMedia·장치 선택·MediaRecorder·VAD 웨이브·일시정지·REC-04/06·종료 확인 | 정상·장애 녹음 시험 통과 |
+| 3. 전사 (STT) | Whisper·AssemblyAI 어댑터, 상태 조회, 화자·시점 표시 | **대부분** — 로컬 faster-whisper·AssemblyAI·AI 동의 후 전사·설정 선택·결과 탭. 화자·비동기 작업 UI는 미완 | 선택한 엔진으로 한국어 평가 파일 처리 성공 |
+| 4. AI 회의록 (LLM) | Ollama·OpenAI 어댑터, 프롬프트, 요약·상세, 근거, 수정·버전 | **부분** — 동의 UX·결과 탭·가상 미리보기·상세 수정. LLM 어댑터·처리 단계·확정은 미완 | AI 품질 및 기존 결과 보호 시험 통과 |
 | 5. 외부 연동 | 확정, 웹훅, 서명, 재시도·중복 방지 | 미착수 | 전송·장애·보안 시험 통과 |
 | 6. 출시 검증 | 사용성, 접근성, 성능, 데이터 처리 안내 | 미착수 | 이해관계자 승인 및 P0 전체 통과 |
 
-**화면 구현 스냅샷:** SCR-01 대부분 · SCR-02 생성+녹음+STT+결과 탭(전사·요약·상세, 가상 미리보기·상세 수정) · SCR-05 STT 선택 · SCR-03 처리 UI·실제 LLM·SCR-04 전용 Route·확정·SCR-06 미구현. 상세는 `docs/화면설계서.md` §0 · `README.md` 진행 목차를 본다.
+**화면 구현 스냅샷:** SCR-01 완료 · SCR-02 생성+녹음+조각/재생+AI 동의+STT(Whisper 기본)+결과 탭 · SCR-05 STT 선택 · SCR-03 실제 LLM·SCR-04 전용 Route·확정·SCR-06 미구현. 상세는 `docs/화면설계서.md` §0 · `README.md` 진행 목차를 본다.
 
 **초기 제품의 완성 기준은 ‘녹음이 되고 요약이 나오는 것’이 아니라, 사용자가 기록을 잃지 않고 AI 결과를 검토·수정한 뒤 필요한 곳에 안전하게 전달할 수 있는 것이다.**
