@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { NoteSection } from "@/components/note/NoteSection";
+import { AiConsentDialog } from "@/components/recording/AiConsentDialog";
+import { AudioPlayer } from "@/components/recording/AudioPlayer";
 import { AudioWaveform } from "@/components/recording/AudioWaveform";
 import { MeetingResultTabs } from "@/components/review/MeetingResultTabs";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
@@ -20,6 +23,12 @@ import {
   VIRTUAL_TRANSCRIPT_SEGMENTS,
 } from "@/lib/mocks/virtualMeetingResult";
 import {
+  deleteMeetingAudioData,
+  loadPlayableMeetingAudio,
+  saveAudioChunk,
+  saveMeetingAudio,
+} from "@/lib/storage/audio";
+import {
   deleteMeetingGeneration,
   getMeetingGeneration,
   saveMeetingGeneration,
@@ -30,13 +39,14 @@ import {
   getMeetingTranscript,
   saveMeetingTranscript,
 } from "@/lib/storage/transcripts";
+import type { MeetingAudio } from "@/lib/types/audio";
 import type { MeetingDetailMinutes } from "@/lib/types/detail";
 import { formatDetailMinutesText } from "@/lib/types/detail";
 import type { MeetingResultTab } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
 import { sttProviderLabel } from "@/lib/types/settings";
 import type { TranscriptSegment } from "@/lib/types/transcript";
-import { formatTimestamp } from "@/lib/utils/format-time";
+import { createId, formatTimestamp } from "@/lib/utils/format-time";
 
 type RecordingState = "idle" | "recording" | "paused";
 
@@ -77,9 +87,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const [title, setTitle] = useState("");
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [seekHint, setSeekHint] = useState<string | null>(null);
   const [micBusy, setMicBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const [consentOpen, setConsentOpen] = useState(false);
   const [reviewSegments, setReviewSegments] = useState<TranscriptSegment[]>([]);
   const [showReview, setShowReview] = useState(false);
   const [sttPending, setSttPending] = useState(false);
@@ -98,6 +109,18 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const [summaryPending, setSummaryPending] = useState(false);
   const [detailPending, setDetailPending] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [savedAudio, setSavedAudio] = useState<MeetingAudio | null>(null);
+  const [audioRecovered, setAudioRecovered] = useState(false);
+  const [audioSaveError, setAudioSaveError] = useState<string | null>(null);
+  const [lastChunkSavedAt, setLastChunkSavedAt] = useState<string | null>(null);
+  const [seekToSec, setSeekToSec] = useState<number | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<{
+    blob: Blob;
+    mimeType: string;
+    sessionId: string;
+    durationSec: number;
+    lastChunkSavedAt: string | null;
+  } | null>(null);
 
   const startedAtRef = useRef<number | null>(null);
   const accumulatedRef = useRef(0);
@@ -106,6 +129,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const titleRef = useRef(title);
   const meetingLoadedRef = useRef(false);
   const recorderStartedRef = useRef(false);
+  const sessionIdRef = useRef<string | null>(null);
+  const lastChunkSavedAtRef = useRef<string | null>(null);
+  const chunkPersistErrorRef = useRef(false);
 
   const { sttProvider } = useAppSettings();
   const {
@@ -122,10 +148,15 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     error: micError,
     phase: micPhase,
     stream: micStream,
+    devices,
+    selectedDeviceId,
+    setSelectedDeviceId,
     start: startMic,
     stop: stopMic,
     setMuted: setMicMuted,
-  } = useMicAnalyser({ active: recordingState === "recording" });
+  } = useMicAnalyser({
+    active: recordingState === "recording" || recordingState === "idle",
+  });
 
   recordingStateRef.current = recordingState;
   titleRef.current = title;
@@ -134,10 +165,11 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     let cancelled = false;
 
     async function load() {
-      const [loaded, transcript, generation] = await Promise.all([
+      const [loaded, transcript, generation, playable] = await Promise.all([
         getMeeting(meetingId),
         getMeetingTranscript(meetingId),
         getMeetingGeneration(meetingId),
+        loadPlayableMeetingAudio(meetingId),
       ]);
       if (cancelled) return;
       if (!loaded) {
@@ -168,8 +200,36 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         setShowReview(true);
         setResultTab("transcript");
       }
+      if (playable?.audio) {
+        let audio = playable.audio;
+        if (playable.recoveredFromChunks) {
+          try {
+            audio = await saveMeetingAudio({
+              meetingId,
+              sessionId: playable.audio.sessionId,
+              blob: playable.audio.blob,
+              mimeType: playable.audio.mimeType,
+              durationSec: loaded.durationSec,
+              lastChunkSavedAt: playable.audio.lastChunkSavedAt,
+            });
+          } catch {
+            // Keep in-memory recovered blob even if persist fails.
+          }
+          void patchMeeting(meetingId, { displayStatus: "복구 필요" }).then(
+            (next) => {
+              if (!cancelled && next) setMeeting(next);
+            },
+          );
+        }
+        if (cancelled) return;
+        setSavedAudio(audio);
+        setAudioRecovered(playable.recoveredFromChunks);
+        setLastChunkSavedAt(audio.lastChunkSavedAt);
+      }
       if (loaded.displayStatus === "녹음 중") {
-        void patchMeeting(meetingId, { displayStatus: "준비" }).then((next) => {
+        void patchMeeting(meetingId, {
+          displayStatus: playable?.recoveredFromChunks ? "복구 필요" : "준비",
+        }).then((next) => {
           if (!cancelled && next) setMeeting(next);
         });
       }
@@ -219,8 +279,32 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   useEffect(() => {
     if (recordingState !== "recording" || !micStream) return;
     if (recorderStartedRef.current) return;
-    recorderStartedRef.current = startRecorder(micStream);
-  }, [recordingState, micStream, startRecorder]);
+    const sessionId = sessionIdRef.current ?? createId("session");
+    sessionIdRef.current = sessionId;
+    recorderStartedRef.current = startRecorder(micStream, {
+      onChunk: (event) => {
+        void saveAudioChunk({
+          meetingId,
+          sessionId,
+          sequence: event.sequence,
+          blob: event.blob,
+          mimeType: event.mimeType,
+        })
+          .then((chunk) => {
+            lastChunkSavedAtRef.current = chunk.savedAt;
+            setLastChunkSavedAt(chunk.savedAt);
+            chunkPersistErrorRef.current = false;
+            setAudioSaveError(null);
+          })
+          .catch(() => {
+            chunkPersistErrorRef.current = true;
+            setAudioSaveError(
+              "음성 조각을 저장하지 못했습니다. 녹음은 계속되며, 종료 시 다시 시도합니다.",
+            );
+          });
+      },
+    });
+  }, [recordingState, micStream, startRecorder, meetingId]);
 
   useEffect(() => {
     return () => {
@@ -229,11 +313,14 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         recordingStateRef.current === "recording" && startedAtRef.current
           ? accumulatedRef.current + (Date.now() - startedAtRef.current) / 1000
           : accumulatedRef.current;
-      void patchMeeting(meetingId, {
+      const patch: Parameters<typeof patchMeeting>[1] = {
         title: titleRef.current.slice(0, 120),
         durationSec: Math.floor(duration),
-        displayStatus: "준비",
-      });
+      };
+      if (recordingStateRef.current !== "idle") {
+        patch.displayStatus = "준비";
+      }
+      void patchMeeting(meetingId, patch);
     };
   }, [meetingId]);
 
@@ -242,12 +329,43 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     if (next) setMeeting(next);
   }
 
+  async function persistFinalAudio(input: {
+    blob: Blob;
+    mimeType: string;
+    sessionId: string;
+    durationSec: number;
+    lastChunkSavedAt: string | null;
+  }) {
+    setAudioSaveError(null);
+    void persist({ displayStatus: "저장 중" });
+    try {
+      const saved = await saveMeetingAudio({
+        meetingId,
+        sessionId: input.sessionId,
+        blob: input.blob,
+        mimeType: input.mimeType,
+        durationSec: input.durationSec,
+        lastChunkSavedAt: input.lastChunkSavedAt,
+      });
+      setSavedAudio(saved);
+      setAudioRecovered(false);
+      setLastChunkSavedAt(saved.lastChunkSavedAt);
+      await persist({ displayStatus: "준비" });
+      return saved;
+    } catch {
+      setAudioSaveError("음성을 저장하지 못했습니다.");
+      void persist({ displayStatus: "복구 필요" });
+      return null;
+    }
+  }
+
   async function transcribeRecording(audio: {
     blob: Blob;
     mimeType: string;
   }) {
     setSttPending(true);
     setSttError(null);
+    void persist({ displayStatus: "AI 처리 중" });
     try {
       const form = new FormData();
       const filename = `meeting.${extensionForMime(audio.mimeType)}`;
@@ -282,32 +400,73 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         : [];
 
       setReviewSegments(segments);
+      setShowReview(true);
       await saveMeetingTranscript({
         meetingId,
         segments,
         provider: data.provider ?? sttProvider,
       });
+      await persist({ displayStatus: "검토 필요" });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "음성 인식에 실패했습니다.";
       setSttError(message);
+      setShowReview(true);
+      await persist({ displayStatus: "처리 실패" });
     } finally {
       setSttPending(false);
     }
   }
 
+  async function ensureMic(deviceId?: string | null) {
+    if (micStream && micPhase === "granted") {
+      if (
+        !deviceId ||
+        deviceId ===
+          (micStream.getAudioTracks()[0]?.getSettings().deviceId ?? null)
+      ) {
+        return true;
+      }
+    }
+    flushSync(() => setMicBusy(true));
+    const ok = await startMic({ deviceId: deviceId ?? selectedDeviceId });
+    setMicBusy(false);
+    return ok;
+  }
+
+  async function previewMic() {
+    if (recordingState !== "idle" || micBusy) return;
+    await ensureMic(selectedDeviceId);
+  }
+
+  async function handleDeviceChange(deviceId: string) {
+    setSelectedDeviceId(deviceId);
+    if (recordingState !== "idle") return;
+    if (micPhase === "granted" || micStream) {
+      await ensureMic(deviceId);
+    }
+  }
+
   async function startRecording() {
     if (recordingState !== "idle" || micBusy) return;
-    flushSync(() => {
-      setMicBusy(true);
-      setSeekHint(null);
-    });
-    const ok = await startMic();
-    setMicBusy(false);
+    const ok = await ensureMic(selectedDeviceId);
     if (!ok) return;
 
     resetRecorder();
     recorderStartedRef.current = false;
+    sessionIdRef.current = createId("session");
+    lastChunkSavedAtRef.current = null;
+    chunkPersistErrorRef.current = false;
+    setLastChunkSavedAt(null);
+    setAudioSaveError(null);
+    setPendingAudio(null);
+    setConsentOpen(false);
+    setSeekToSec(null);
+
+    await deleteMeetingAudioData(meetingId);
+    setSavedAudio(null);
+    setAudioRecovered(false);
+
     setReviewSegments([]);
     setShowReview(false);
     setSttError(null);
@@ -350,33 +509,88 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     void persist({ displayStatus: "녹음 중" });
   }
 
-  async function stopRecording() {
+  function requestStopRecording() {
     if (recordingState === "idle") return;
+    setStopConfirmOpen(true);
+  }
+
+  async function confirmStopRecording() {
+    setStopConfirmOpen(false);
+    if (recordingState === "idle") return;
+
     if (recordingState === "recording" && startedAtRef.current !== null) {
       accumulatedRef.current += (Date.now() - startedAtRef.current) / 1000;
     }
     startedAtRef.current = null;
     setElapsedSec(accumulatedRef.current);
-    setShowReview(true);
-    setSttPending(true);
-    setSttError(null);
 
     const audio = await stopRecorder();
     recorderStartedRef.current = false;
     stopMic();
     setRecordingState("idle");
-    void persist({
-      displayStatus: "준비",
-      durationSec: Math.floor(accumulatedRef.current),
-    });
+
+    const durationSec = Math.floor(accumulatedRef.current);
+    void persist({ durationSec });
 
     if (!audio) {
-      setSttPending(false);
-      setSttError("녹음된 음성을 찾지 못했습니다.");
+      setAudioSaveError("녹음된 음성을 찾지 못했습니다.");
+      void persist({ displayStatus: "복구 필요" });
       return;
     }
 
-    await transcribeRecording(audio);
+    const sessionId = sessionIdRef.current ?? createId("session");
+    const pending = {
+      blob: audio.blob,
+      mimeType: audio.mimeType,
+      sessionId,
+      durationSec,
+      lastChunkSavedAt: lastChunkSavedAtRef.current,
+    };
+    setPendingAudio(pending);
+
+    const saved = await persistFinalAudio(pending);
+    if (!saved) {
+      // Keep pending for retry / download even if IndexedDB write failed.
+      setConsentOpen(false);
+      return;
+    }
+
+    setConsentOpen(true);
+  }
+
+  async function retrySaveAudio() {
+    if (!pendingAudio) return;
+    const saved = await persistFinalAudio(pendingAudio);
+    if (saved) setConsentOpen(true);
+  }
+
+  function downloadPendingOrSavedAudio() {
+    const source = pendingAudio ?? savedAudio;
+    if (!source) return;
+    const url = URL.createObjectURL(source.blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${title.slice(0, 40) || "meeting"}.${extensionForMime(source.mimeType)}`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleSaveAudioOnly() {
+    setConsentOpen(false);
+    setPendingAudio(null);
+    setShowReview(false);
+    void persist({ displayStatus: "준비" });
+  }
+
+  function handleGenerateAi() {
+    setConsentOpen(false);
+    const audio = pendingAudio ?? savedAudio;
+    setPendingAudio(null);
+    if (!audio) {
+      setSttError("저장된 음성을 찾지 못했습니다.");
+      return;
+    }
+    void transcribeRecording(audio);
   }
 
   async function previewSummaryWithVirtualData() {
@@ -459,9 +673,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       : null;
 
   function handleSeek(seconds: number) {
-    setSeekHint(
-      `메모 시점 [${formatTimestamp(seconds)}] — 음성 재생은 녹음 종료·저장 후 제공됩니다.`,
-    );
+    if (!savedAudio && !pendingAudio) {
+      return;
+    }
+    setSeekToSec(seconds);
   }
 
   if (meeting === undefined) {
@@ -488,6 +703,8 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     minute: "2-digit",
   });
 
+  const playableBlob = savedAudio ?? pendingAudio;
+
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[1440px] flex-col px-4 py-5 sm:px-6 lg:px-8">
       <header className="animate-fade mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -496,7 +713,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             href="/"
             className="shrink-0 text-sm font-medium text-[var(--muted)] transition-colors hover:text-[var(--foreground)]"
           >
-            회의 목록
+            ← 목록
           </Link>
           <div className="h-4 w-px bg-[var(--border-strong)]" aria-hidden />
           <input
@@ -565,10 +782,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                 <button
                   type="button"
                   onClick={() => void startRecording()}
-                  disabled={micBusy || sttPending || previewBusy}
+                  disabled={micBusy || sttPending || previewBusy || consentOpen}
                   className="btn btn-danger px-5 py-2.5"
                 >
-                  {micBusy ? "마이크 연결 중…" : "녹음 시작"}
+                  {micBusy ? "마이크 연결 중…" : "● 녹음 시작"}
                 </button>
               )}
               {recordingState === "recording" && (
@@ -582,7 +799,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => void stopRecording()}
+                    onClick={requestStopRecording}
                     className="btn btn-primary px-4 py-2.5"
                   >
                     녹음 종료
@@ -600,7 +817,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => void stopRecording()}
+                    onClick={requestStopRecording}
                     className="btn btn-primary px-4 py-2.5"
                   >
                     녹음 종료
@@ -609,6 +826,56 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
               )}
             </div>
           </div>
+
+          {recordingState === "idle" && (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-col gap-2 rounded-2xl bg-[var(--surface-raised)] px-4 py-3 ring-1 ring-[var(--border)] sm:flex-row sm:items-center">
+                <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-[var(--muted)]">
+                  마이크
+                  <select
+                    className="field w-full text-sm text-[var(--foreground)]"
+                    value={selectedDeviceId ?? ""}
+                    onChange={(event) =>
+                      void handleDeviceChange(event.target.value)
+                    }
+                    aria-label="마이크 선택"
+                  >
+                    {devices.length === 0 ? (
+                      <option value="">기본 마이크</option>
+                    ) : (
+                      devices.map((device) => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="btn btn-ghost shrink-0 px-3 py-2 text-sm"
+                  onClick={() => void previewMic()}
+                  disabled={micBusy || sttPending || previewBusy}
+                >
+                  {micPhase === "granted" ? "입력 재확인" : "입력 확인"}
+                </button>
+              </div>
+
+              {micPhase === "granted" && (
+                <div className="flex items-center gap-3 rounded-2xl bg-[var(--accent-soft)]/70 px-4 py-3 ring-1 ring-[var(--border)]">
+                  <span className="shrink-0 text-xs font-medium text-[var(--muted)]">
+                    입력
+                  </span>
+                  <AudioWaveform
+                    levels={levels}
+                    active
+                    voiceActive={voiceActive}
+                    className="min-w-0 flex-1 justify-center"
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {recordingState === "idle" && (
             <div className="mt-4 flex flex-col gap-3 rounded-2xl bg-[var(--accent-soft)] px-4 py-3 ring-1 ring-[var(--border)] sm:flex-row sm:items-center sm:justify-between">
@@ -623,7 +890,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
               <button
                 type="button"
                 onClick={() => void previewSummaryWithVirtualData()}
-                disabled={micBusy || sttPending || previewBusy}
+                disabled={micBusy || sttPending || previewBusy || consentOpen}
                 className="btn btn-accent shrink-0 px-4 py-2.5"
               >
                 {previewBusy
@@ -668,10 +935,18 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             </div>
           )}
 
+          {lastChunkSavedAt &&
+            (recordingState === "recording" || recordingState === "paused") && (
+              <p className="mt-3 text-xs text-[var(--muted)]">
+                마지막 조각 저장 ·{" "}
+                {new Date(lastChunkSavedAt).toLocaleTimeString("ko-KR")}
+              </p>
+            )}
+
           <p className="mt-3 text-xs text-[var(--muted)]">
             선택한 마이크로 입력되는 소리만 녹음됩니다
             {recordingState === "idle"
-              ? " · 녹음 종료 후 STT 변환, 또는 가상 데이터로 요약 미리보기를 확인할 수 있습니다"
+              ? " · 녹음 종료 후 AI 처리 여부를 확인합니다"
               : " · 녹음이 끝난 뒤 음성 인식 결과가 표시됩니다"}
           </p>
 
@@ -697,13 +972,77 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             </div>
           )}
 
-          {seekHint && (
-            <p className="mt-2 text-sm text-[var(--accent)]" role="status">
-              {seekHint}
+          {audioSaveError && (
+            <div
+              className="mt-3 rounded-2xl bg-[var(--danger-soft)] px-4 py-3 ring-1 ring-[var(--border)]"
+              role="alert"
+            >
+              <p className="text-sm font-semibold text-[var(--danger)]">
+                ! 음성을 저장하지 못했습니다.
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                {audioSaveError}
+                {lastChunkSavedAt
+                  ? ` 마지막 저장: ${new Date(lastChunkSavedAt).toLocaleTimeString("ko-KR")}`
+                  : ""}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {pendingAudio && (
+                  <button
+                    type="button"
+                    className="btn btn-primary px-3 py-1.5 text-sm"
+                    onClick={() => void retrySaveAudio()}
+                  >
+                    다시 시도
+                  </button>
+                )}
+                {(pendingAudio || savedAudio) && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost px-3 py-1.5 text-sm"
+                    onClick={downloadPendingOrSavedAudio}
+                  >
+                    녹음 종료 후 파일 다운로드
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {audioRecovered && savedAudio && recordingState === "idle" && (
+            <p className="mt-2 text-sm text-[var(--warning)]" role="status">
+              비정상 종료 전 저장된 음성 조각을 복구했습니다. 재생·다운로드 후
+              AI 생성을 이어갈 수 있습니다.
             </p>
           )}
         </div>
       </div>
+
+      {playableBlob && recordingState === "idle" && (
+        <div className="animate-rise mb-6">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="font-[family-name:var(--font-display)] text-sm font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
+              원본 음성
+            </h2>
+            {!showReview && !sttPending && (
+              <button
+                type="button"
+                className="btn btn-ghost px-3 py-1.5 text-sm"
+                onClick={() => setConsentOpen(true)}
+              >
+                AI 회의록 생성
+              </button>
+            )}
+          </div>
+          <AudioPlayer
+            blob={playableBlob.blob}
+            mimeType={playableBlob.mimeType}
+            fileName={title.slice(0, 40) || "meeting"}
+            seekToSec={seekToSec}
+            onSeekHandled={() => setSeekToSec(null)}
+          />
+        </div>
+      )}
 
       <div
         className="animate-rise grid min-h-0 flex-1 gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(260px,0.65fr)]"
@@ -783,13 +1122,30 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
               <div>
                 <dt className="text-xs text-[var(--muted)]">저장</dt>
                 <dd className="mt-1 text-sm leading-relaxed text-[var(--muted)]">
-                  메모는 이 브라우저 IndexedDB에 자동 저장됩니다
+                  음성 조각·메모는 이 브라우저 IndexedDB에 저장됩니다
                 </dd>
               </div>
             </dl>
           </div>
         </aside>
       </div>
+
+      <ConfirmDialog
+        open={stopConfirmOpen}
+        title="회의 녹음을 종료하시겠습니까?"
+        description={`현재 녹음: ${formatTimestamp(elapsedSec)}\n\n녹음을 종료하면 음성 파일을 저장합니다.`}
+        confirmLabel="녹음 종료"
+        onCancel={() => setStopConfirmOpen(false)}
+        onConfirm={() => void confirmStopRecording()}
+      />
+
+      <AiConsentDialog
+        open={consentOpen}
+        sttProvider={sttProvider}
+        onCancel={() => setConsentOpen(false)}
+        onSaveAudioOnly={handleSaveAudioOnly}
+        onGenerateAi={handleGenerateAi}
+      />
 
       <SettingsDialog
         open={settingsOpen}

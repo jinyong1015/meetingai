@@ -1,5 +1,8 @@
+import { deleteMeetingAudioData } from "@/lib/storage/audio";
 import { MEETINGS_STORE, openDb, requestToPromise } from "@/lib/storage/db";
+import { deleteMeetingGeneration } from "@/lib/storage/generations";
 import { deleteNotesByMeeting } from "@/lib/storage/notes";
+import { deleteMeetingTranscript } from "@/lib/storage/transcripts";
 import type { Meeting } from "@/lib/types/meeting";
 import { createId } from "@/lib/utils/format-time";
 
@@ -84,7 +87,12 @@ export async function createMeeting(
 }
 
 export async function deleteMeeting(id: string) {
-  await deleteNotesByMeeting(id);
+  await Promise.all([
+    deleteNotesByMeeting(id),
+    deleteMeetingTranscript(id),
+    deleteMeetingGeneration(id),
+    deleteMeetingAudioData(id),
+  ]);
   const db = await openDb();
   const tx = db.transaction(MEETINGS_STORE, "readwrite");
   await requestToPromise(tx.objectStore(MEETINGS_STORE).delete(id));

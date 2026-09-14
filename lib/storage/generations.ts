@@ -81,6 +81,7 @@ export async function saveMeetingGeneration(input: {
 export async function deleteMeetingGeneration(meetingId: string) {
   const db = await openDb();
   try {
+    if (!db.objectStoreNames.contains(GENERATIONS_STORE)) return;
     const tx = db.transaction(GENERATIONS_STORE, "readwrite");
     await requestToPromise(
       tx.objectStore(GENERATIONS_STORE).delete(meetingId),
@@ -88,4 +89,37 @@ export async function deleteMeetingGeneration(meetingId: string) {
   } finally {
     db.close();
   }
+}
+
+export async function getAllGenerations(): Promise<MeetingGeneration[]> {
+  const db = await openDb();
+  try {
+    if (!db.objectStoreNames.contains(GENERATIONS_STORE)) return [];
+    const tx = db.transaction(GENERATIONS_STORE, "readonly");
+    const rows = await requestToPromise(
+      tx.objectStore(GENERATIONS_STORE).getAll(),
+    );
+    return rows as MeetingGeneration[];
+  } finally {
+    db.close();
+  }
+}
+
+export async function findMeetingIdsByGenerationQuery(
+  query: string,
+): Promise<string[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const generations = await getAllGenerations();
+  const ids = new Set<string>();
+  for (const generation of generations) {
+    const haystack = [
+      generation.summaryText ?? "",
+      generation.detailText ?? "",
+    ]
+      .join("\n")
+      .toLowerCase();
+    if (haystack.includes(q)) ids.add(generation.meetingId);
+  }
+  return [...ids];
 }

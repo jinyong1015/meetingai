@@ -12,8 +12,8 @@ STT와 LLM을 각각 로컬·클라우드 중 선택해 사용합니다.
 ```text
 MeetingAI
 ├── STT (음성 → 텍스트)  … 녹음 종료 후 처리 (Realtime 미사용)
-│   ├── Whisper      … 로컬 (`WHISPER_API_URL`)
-│   └── AssemblyAI   … 클라우드 Pre-recorded (`/v2/upload` · `/v2/transcript`)
+│   ├── Whisper      … 로컬 faster-whisper (`whisper-server` · :8080)
+│   └── AssemblyAI   … 클라우드 Pre-recorded (선택)
 └── LLM (요약 · 상세 회의록)  … 어댑터 미구현 · UI·가상 미리보기는 준비됨
     ├── Ollama       … 로컬
     └── OpenAI       … 클라우드
@@ -21,10 +21,10 @@ MeetingAI
 
 | 구분 | 옵션 | 처리 위치 | 현재 |
 |---|---|---|---|
-| **STT** | Whisper / AssemblyAI | 로컬 / 클라우드 Pre-recorded | **구현** (녹음 종료 후) |
+| **STT** | Whisper / AssemblyAI | **로컬 faster-whisper** / 클라우드 | **구현** (녹음 종료·동의 후) |
 | **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **미구현** (결과 탭·가상 데이터 미리보기만) |
 
-설정(SCR-05)에서 STT 엔진을 고를 수 있습니다. API 키·Whisper URL은 서버 환경변수에만 둡니다.
+설정(SCR-05)에서 STT 엔진을 고를 수 있습니다. Whisper는 OpenAI API를 쓰지 않고 `127.0.0.1:8080` 로컬 서버만 호출합니다.
 
 ---
 
@@ -32,7 +32,7 @@ MeetingAI
 
 | 구분 | 진행률 | 설명 |
 |---|---:|---|
-| **P0 MVP (출시 필수)** | **약 52%** | 목록·생성·녹음·STT·결과 탭(전사·요약·상세)·상세 수정·가상 미리보기 |
+| **P0 MVP (출시 필수)** | **약 62%** | 목록·생성·녹음·조각 저장·원본 재생·AI 동의·STT·결과 탭·상세 수정 |
 | P1 (후속) | 0% | 미착수 |
 | P2 / Future | 0% | 미착수 (실시간 전사 포함) |
 
@@ -48,18 +48,18 @@ MeetingAI
 - [x] 공통 UI 톤 (글래스·틸 액센트)
 - [x] IndexedDB 공통 레이어 (`meetings` · `notes` · `settings` · `transcripts` · `generations`)
 
-### 2. SCR-01 회의 목록 — 약 90%
+### 2. SCR-01 회의 목록 — 완료
 - [x] `/` · `/meetings` 목록 화면 (마케팅 랜딩 없음)
 - [x] 헤더 (제품명 · 로컬 저장됨 · 설정)
 - [x] 회의 카드 (제목 · 일시 · 길이 · 상태 · 요약 미리보기)
-- [x] 검색 (제목·태그·참석자·요약·메모, 300ms debounce)
+- [x] 검색 (제목·태그·참석자·요약·메모·전사문·AI 본문, 300ms debounce)
 - [x] 기간 · 상태 · 확정 · 정렬 필터
 - [x] 빈 화면 / 검색 결과 없음 구분 · 필터 초기화
-- [x] 더보기 · 삭제 확인 · 회의 JSON 내보내기
+- [x] 더보기 · 삭제 확인 · 회의 JSON 내보내기 (메모·전사·생성 포함)
 - [x] 저장 공간 표시 · 백업 관리 (회의+메모 JSON)
-- [ ] 전사문·AI 본문 필드 검색 (데이터는 저장 중 · 검색 연동은 후속)
+- [x] 삭제 시 메모·전사·생성·음성 데이터 cascade 정리
 
-### 3. SCR-02 새 회의 / 녹음 — 약 80%
+### 3. SCR-02 새 회의 / 녹음 — 약 95%
 - [x] 새 회의 생성 폼 (`/meetings/new`) — 제목·일시·참석자·태그
 - [x] **`[회의 시작]` 시에만 IndexedDB 저장**
 - [x] 생성 후 `/meetings/{meetingId}/record` 이동
@@ -68,17 +68,18 @@ MeetingAI
 - [x] `getUserMedia` 마이크 권한 · 권한 안내 UX
 - [x] `MediaRecorder` 음성 수집 (`audio/webm;codecs=opus` 우선)
 - [x] 입력 레벨 웨이브 — **실제 음성(RMS·말소리 대역) 감지 시에만 반응** (`useMicAnalyser`)
-- [x] 녹음 종료 후 STT 전사
+- [x] 녹음 종료 확인 모달
+- [x] 음성 조각 로컬 저장 · 복구 (REC-04, 약 5초)
+- [x] 원본 재생 · 다운로드 (REC-06)
+- [x] AI 처리 · 엔진별 전송 동의 UX (음성만 저장 / AI 생성 → STT)
+- [x] 마이크 장치 선택 · 입력 확인
+- [x] 녹음 종료 후 동의 시 STT 전사
 - [x] 회의 결과 탭 (**전사문 · 요약 · 상세**, 기본 탭=전사문)
 - [x] 가상 데이터로 요약·상세 미리보기 (녹음 없이 UI 확인)
 - [x] 전사문 · 생성 결과 IndexedDB 저장 · 새로고침 복원
-- [ ] 마이크 장치 선택 UI
-- [ ] 음성 조각 로컬 저장 · 복구 (REC-04)
-- [ ] 원본 재생 · 다운로드 (REC-06)
-- [ ] 녹음 종료 확인 모달
-- [ ] AI 처리 · 엔진별 전송 동의 UX (SCR-03 연결)
+- [ ] SCR-03 LLM 요약·상세 실제 생성 (동의 후 STT까지 · LLM은 후속)
 
-### 4. 메모 입력 (NOTE-01~05) — 약 90%
+### 4. 메모 입력 (NOTE-01~05) — 완료
 - [x] 메모 추가 · 수정 · 삭제
 - [x] 회의당 20,000자 제한
 - [x] 녹음 중 시점 표시
@@ -86,7 +87,7 @@ MeetingAI
 - [x] 자동 저장 (1초 / 최대 5초)
 - [x] 저장 상태 표시
 - [x] IndexedDB 로컬 저장 · 새로고침 복원
-- [ ] 시점 클릭 시 실제 음성 위치 이동 (재생기 연동 후)
+- [x] 시점 클릭 시 실제 음성 위치 이동 (원본 플레이어 연동)
 
 ### 5. STT (녹음 종료 후) — 약 70%
 - [x] STT 어댑터 인터페이스 (`assemblyai` · `whisper`)
@@ -135,17 +136,17 @@ MeetingAI
 |---|---|
 | `/`, `/meetings` | SCR-01 회의 목록 · 검색 · 필터 · 삭제 · 백업 |
 | `/meetings/new` | SCR-02 Step 1 새 회의 생성 |
-| `/meetings/[meetingId]/record` | 녹음 · 메모 · STT · **회의 결과 탭(전사·요약·상세)** · 가상 미리보기 |
+| `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · 결과 탭 · 가상 미리보기 |
 | `app/api/stt/*` | 전사 · 엔진 상태 (서버 전용 키) |
-| `components/recording/*` | RecordMeetingScreen · AudioWaveform · TranscriptResultPanel |
+| `components/recording/*` | RecordMeetingScreen · AudioWaveform · AudioPlayer · AiConsentDialog |
 | `components/review/*` | MeetingResultTabs · SummaryPanel · DetailPanel(조회·수정) |
 | `components/settings/*` | SettingsDialog (STT 선택) |
-| `lib/hooks/useMicAnalyser` | AnalyserNode · 적응형 노이즈 게이트 · `voiceActive` |
+| `lib/hooks/useMicAnalyser` | AnalyserNode · 장치 선택 · 적응형 노이즈 게이트 · `voiceActive` |
 | `lib/mocks/virtualMeetingResult` | 가상 전사·요약·상세 샘플 |
 | `lib/stt/*` | AssemblyAI · Whisper 어댑터 |
-| `lib/storage/*` | IndexedDB (`meetings` · `notes` · `settings` · `transcripts` · `generations`) |
+| `lib/storage/*` | IndexedDB (`meetings` · `notes` · `settings` · `transcripts` · `generations` · `audioChunks` · `meetingAudio`) |
 
-**아직 없음:** 음성 조각 복구·원본 재생, 실제 LLM 연동, SCR-03 동의·처리 단계 UI, SCR-04 전용 Route·확정·웹훅, 실시간(Realtime) 전사
+**아직 없음:** 실제 LLM 연동, SCR-03 처리 단계 UI, SCR-04 전용 Route·확정·웹훅, 실시간(Realtime) 전사
 
 ### 저장 시점 (중요)
 
@@ -153,30 +154,51 @@ MeetingAI
 |---|---|
 | `/meetings/new` 열기만 하고 취소·목록으로 복귀 | 아니오 |
 | `[회의 시작]` 클릭 | 예 (IndexedDB에 회의 생성 후 녹음 화면) |
-| 녹음 종료 후 STT 완료 | 예 (`transcripts`에 전사문 저장) |
+| 녹음 중 | 예 (`audioChunks`에 약 5초 간격 조각 저장) |
+| 녹음 종료 후 `[음성만 저장]` | 예 (`meetingAudio`만 · STT 없음) |
+| 녹음 종료 후 `[AI 회의록 생성]` · STT 완료 | 예 (`transcripts`에 전사문 저장) |
 | 가상 미리보기 / 상세 수정 저장 | 예 (`generations` · `summaryPreview` 갱신) |
 
 ---
 
 ## 로컬 실행
 
+### 1) 로컬 Whisper 서버 (필수 · STT)
+
+OpenAI API 없이 **faster-whisper**가 `localhost:8080`에서  
+`POST /v1/audio/transcriptions` 를 제공합니다. 상세: [`whisper-server/README.md`](whisper-server/README.md)
+
+```powershell
+# ffmpeg (webm 디코딩) — 한 번만
+winget install Gyan.FFmpeg
+# 터미널을 닫았다가 다시 연 뒤:
+
+cd whisper-server
+.\start.ps1
+```
+
+Health 확인: http://127.0.0.1:8080/health
+
+### 2) Next.js 앱
+
 ```bash
 npm install
-cp .env.example .env.local   # 키 입력
+cp .env.example .env.local   # 이미 whisper 기본값으로 채워 둠
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000` 접속
+브라우저에서 `http://localhost:3000` 접속 → **설정**에서 STT = Whisper 저장  
+→ 녹음 종료 → AI 동의 → **AI 회의록 생성**
 
 ### 환경변수 (`.env.local`)
 
 | 변수 | 설명 |
 |---|---|
-| `ASSEMBLYAI_API_KEY` | AssemblyAI API 키 (서버 전용) |
-| `STT_PROVIDER` | 기본값 `assemblyai` 또는 `whisper` (설정 UI가 우선) |
-| `WHISPER_API_URL` | 로컬 Whisper OpenAI 호환 전사 URL (선택) |
-| `WHISPER_API_KEY` | Whisper 서버 인증 (선택) |
-| `WHISPER_MODEL` | Whisper 모델명 (선택) |
+| `STT_PROVIDER` | `whisper` (기본) 또는 `assemblyai` |
+| `WHISPER_API_URL` | `http://127.0.0.1:8080/v1/audio/transcriptions` |
+| `WHISPER_MODEL` | 로컬 모델 크기 (`small` 권장) |
+| `WHISPER_API_KEY` | 로컬 서버는 불필요 |
+| `ASSEMBLYAI_API_KEY` | AssemblyAI 사용 시에만 |
 
 > `NEXT_PUBLIC_` 접두사로 API 키를 두지 마세요. 브라우저에 노출됩니다.
 
@@ -184,10 +206,9 @@ npm run dev
 
 ## 다음에 할 일 (권장 순서)
 
-1. 음성 조각 로컬 저장 · 원본 재생·다운로드  
-2. 녹음 종료 → AI 동의 → **SCR-03** (실제 LLM 요약·상세)  
-3. **SCR-04** 전용 Route · 확정 · **SCR-06** 웹훅  
-4. SCR-05 일반 설정 · LLM · 프롬프트 본편
+1. 녹음 종료 → AI 동의 → **SCR-03** (실제 LLM 요약·상세)  
+2. **SCR-04** 전용 Route · 확정 · **SCR-06** 웹훅  
+3. SCR-05 일반 설정 · LLM · 프롬프트 본편
 
 ---
 

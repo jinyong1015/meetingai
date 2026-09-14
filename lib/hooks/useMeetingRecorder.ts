@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+const CHUNK_TIMESLICE_MS = 5000;
+
 function pickMimeType(): string {
   if (typeof MediaRecorder === "undefined") return "";
   const candidates = [
@@ -21,12 +23,23 @@ export type RecordedAudio = {
   mimeType: string;
 };
 
+export type RecorderChunkEvent = {
+  blob: Blob;
+  mimeType: string;
+  sequence: number;
+};
+
+type StartOptions = {
+  /** Called for each timeslice / final dataavailable chunk (REC-04). */
+  onChunk?: (event: RecorderChunkEvent) => void;
+};
+
 type UseMeetingRecorderResult = {
   /** Begin capturing from the live mic stream. */
-  start: (stream: MediaStream) => boolean;
+  start: (stream: MediaStream, options?: StartOptions) => boolean;
   pause: () => void;
   resume: () => void;
-  /** Stop and return the recorded audio blob. */
+  /** Stop and return the assembled recorded audio blob. */
   stop: () => Promise<RecordedAudio | null>;
   reset: () => void;
 };
@@ -34,11 +47,14 @@ type UseMeetingRecorderResult = {
 /**
  * MediaRecorder wrapper for meeting audio.
  * Pause time is excluded from the file when pause()/resume() are used.
+ * Requests data about every 5s for local chunk persistence (REC-04).
  */
 export function useMeetingRecorder(): UseMeetingRecorderResult {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeTypeRef = useRef("audio/webm");
+  const sequenceRef = useRef(0);
+  const onChunkRef = useRef<StartOptions["onChunk"]>(undefined);
 
   const reset = useCallback(() => {
     const recorder = recorderRef.current;
@@ -53,26 +69,38 @@ export function useMeetingRecorder(): UseMeetingRecorderResult {
     }
     recorderRef.current = null;
     chunksRef.current = [];
+    sequenceRef.current = 0;
+    onChunkRef.current = undefined;
   }, []);
 
   useEffect(() => () => reset(), [reset]);
 
   const start = useCallback(
-    (stream: MediaStream) => {
+    (stream: MediaStream, options?: StartOptions) => {
       if (typeof MediaRecorder === "undefined") return false;
       reset();
 
       const mimeType = pickMimeType();
+      onChunkRef.current = options?.onChunk;
       try {
         const recorder = mimeType
           ? new MediaRecorder(stream, { mimeType })
           : new MediaRecorder(stream);
         mimeTypeRef.current = recorder.mimeType || mimeType || "audio/webm";
         chunksRef.current = [];
+        sequenceRef.current = 0;
         recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) chunksRef.current.push(event.data);
+          if (event.data.size === 0) return;
+          chunksRef.current.push(event.data);
+          const sequence = sequenceRef.current;
+          sequenceRef.current += 1;
+          onChunkRef.current?.({
+            blob: event.data,
+            mimeType: mimeTypeRef.current,
+            sequence,
+          });
         };
-        recorder.start(1000);
+        recorder.start(CHUNK_TIMESLICE_MS);
         recorderRef.current = recorder;
         return true;
       } catch {
@@ -111,13 +139,21 @@ export function useMeetingRecorder(): UseMeetingRecorderResult {
         });
         chunksRef.current = [];
         recorderRef.current = null;
+        onChunkRef.current = undefined;
         resolve(
           blob.size > 0 ? { blob, mimeType: mimeTypeRef.current } : null,
         );
       };
       try {
-        if (recorder.state !== "inactive") recorder.stop();
-        else {
+        if (recorder.state !== "inactive") {
+          // Flush the final partial timeslice before stop.
+          try {
+            recorder.requestData();
+          } catch {
+            // ignore
+          }
+          recorder.stop();
+        } else {
           recorderRef.current = null;
           resolve(null);
         }

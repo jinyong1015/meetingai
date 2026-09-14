@@ -8,7 +8,10 @@ export function isSttProvider(value: unknown): value is SttProvider {
 
 export function getSttProvider(): SttProvider {
   const raw = process.env.STT_PROVIDER?.trim().toLowerCase();
+  if (raw === "assemblyai") return "assemblyai";
   if (raw === "whisper") return "whisper";
+  // Prefer local Whisper when URL is configured.
+  if (process.env.WHISPER_API_URL?.trim()) return "whisper";
   return "assemblyai";
 }
 

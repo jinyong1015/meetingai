@@ -28,9 +28,18 @@ export type MicPermissionPhase =
   | "denied"
   | "error";
 
+export type MicDeviceOption = {
+  deviceId: string;
+  label: string;
+};
+
 type UseMicAnalyserOptions = {
   /** When true, analyser samples mic levels. When false, levels stay flat. */
   active: boolean;
+};
+
+type StartMicOptions = {
+  deviceId?: string | null;
 };
 
 type UseMicAnalyserResult = {
@@ -41,12 +50,16 @@ type UseMicAnalyserResult = {
   phase: MicPermissionPhase;
   /** Live microphone stream (null when stopped). */
   stream: MediaStream | null;
+  devices: MicDeviceOption[];
+  selectedDeviceId: string | null;
+  setSelectedDeviceId: (deviceId: string) => void;
   /** Opens mic + analyser. Resolves true on success. */
-  start: () => Promise<boolean>;
+  start: (options?: StartMicOptions) => Promise<boolean>;
   /** Releases mic and audio context. */
   stop: () => void;
   /** Mutes tracks without releasing the stream. */
   setMuted: (muted: boolean) => void;
+  refreshDevices: () => Promise<void>;
 };
 
 function mapMediaError(err: unknown): MicAnalyserError {
@@ -79,6 +92,11 @@ function computeRms(timeData: Uint8Array): number {
   return Math.sqrt(sumSq / Math.max(1, timeData.length));
 }
 
+function labelForDevice(device: MediaDeviceInfo, index: number): string {
+  if (device.label.trim()) return device.label;
+  return `마이크 ${index + 1}`;
+}
+
 export function useMicAnalyser({
   active,
 }: UseMicAnalyserOptions): UseMicAnalyserResult {
@@ -87,6 +105,10 @@ export function useMicAnalyser({
   const [error, setError] = useState<MicAnalyserError | null>(null);
   const [phase, setPhase] = useState<MicPermissionPhase>("idle");
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [devices, setDevices] = useState<MicDeviceOption[]>([]);
+  const [selectedDeviceId, setSelectedDeviceIdState] = useState<string | null>(
+    null,
+  );
 
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
@@ -98,8 +120,11 @@ export function useMicAnalyser({
   const voiceActiveRef = useRef(false);
   const lastPaintRef = useRef(0);
   const startGenerationRef = useRef(0);
-  const timeBufferRef = useRef<Uint8Array | null>(null);
-  const freqBufferRef = useRef<Uint8Array | null>(null);
+  const timeBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const freqBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const selectedDeviceIdRef = useRef<string | null>(null);
+
+  selectedDeviceIdRef.current = selectedDeviceId;
 
   const stopLoop = useCallback(() => {
     if (rafRef.current !== null) {
@@ -128,6 +153,32 @@ export function useMicAnalyser({
     freqBufferRef.current = null;
   }, [stopLoop]);
 
+  const refreshDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const inputs = list.filter((device) => device.kind === "audioinput");
+      const options = inputs.map((device, index) => ({
+        deviceId: device.deviceId,
+        label: labelForDevice(device, index),
+      }));
+      setDevices(options);
+      if (
+        options.length > 0 &&
+        (!selectedDeviceIdRef.current ||
+          !options.some((item) => item.deviceId === selectedDeviceIdRef.current))
+      ) {
+        setSelectedDeviceIdState(options[0]?.deviceId ?? null);
+      }
+    } catch {
+      // ignore enumeration failures
+    }
+  }, []);
+
+  const setSelectedDeviceId = useCallback((deviceId: string) => {
+    setSelectedDeviceIdState(deviceId);
+  }, []);
+
   const tick = useCallback(() => {
     const analyser = analyserRef.current;
     if (!analyser) return;
@@ -136,13 +187,17 @@ export function useMicAnalyser({
       !timeBufferRef.current ||
       timeBufferRef.current.length !== analyser.fftSize
     ) {
-      timeBufferRef.current = new Uint8Array(analyser.fftSize);
+      timeBufferRef.current = new Uint8Array(
+        new ArrayBuffer(analyser.fftSize),
+      );
     }
     if (
       !freqBufferRef.current ||
       freqBufferRef.current.length !== analyser.frequencyBinCount
     ) {
-      freqBufferRef.current = new Uint8Array(analyser.frequencyBinCount);
+      freqBufferRef.current = new Uint8Array(
+        new ArrayBuffer(analyser.frequencyBinCount),
+      );
     }
 
     const timeData = timeBufferRef.current;
@@ -158,7 +213,6 @@ export function useMicAnalyser({
     );
     const speaking = rms >= gate;
 
-    // Adapt noise floor only while quiet so speech does not raise the gate.
     if (!speaking) {
       noiseFloorRef.current = floor * 0.96 + rms * 0.04;
     } else {
@@ -174,7 +228,6 @@ export function useMicAnalyser({
         if (next[i] < IDLE_LEVEL + 0.02) next[i] = IDLE_LEVEL;
       }
     } else {
-      // Prefer speech-band bins (~85Hz–4kHz); skip DC / very low rumble.
       const binCount = freqData.length;
       const speechStart = Math.min(2, binCount - 1);
       const speechEnd = Math.max(
@@ -211,93 +264,112 @@ export function useMicAnalyser({
     rafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  const start = useCallback(async () => {
-    if (typeof window === "undefined") return false;
+  const start = useCallback(
+    async (options?: StartMicOptions) => {
+      if (typeof window === "undefined") return false;
 
-    if (!window.isSecureContext) {
-      setError("insecure");
-      setPhase("error");
-      return false;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError("unsupported");
-      setPhase("error");
-      return false;
-    }
-
-    const generation = ++startGenerationRef.current;
-    releaseHardware();
-
-    // Paint the in-app prompt first, then request mic in the same click turn.
-    flushSync(() => {
-      setLevels(IDLE_LEVELS);
-      setVoiceActive(false);
-      setError(null);
-      setPhase("requesting");
-    });
-
-    try {
-      // Keep constraints simple so the browser permission prompt is more reliable.
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      if (generation !== startGenerationRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (!window.isSecureContext) {
+        setError("insecure");
+        setPhase("error");
         return false;
       }
 
-      const AudioContextCtor =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext?: typeof AudioContext })
-          .webkitAudioContext;
-      if (!AudioContextCtor) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (!navigator.mediaDevices?.getUserMedia) {
         setError("unsupported");
         setPhase("error");
         return false;
       }
 
-      const context = new AudioContextCtor();
-      if (context.state === "suspended") {
-        await context.resume();
-      }
+      const generation = ++startGenerationRef.current;
+      releaseHardware();
 
-      if (generation !== startGenerationRef.current) {
-        void context.close();
-        stream.getTracks().forEach((track) => track.stop());
+      flushSync(() => {
+        setLevels(IDLE_LEVELS);
+        setVoiceActive(false);
+        setError(null);
+        setPhase("requesting");
+      });
+
+      const deviceId =
+        options?.deviceId !== undefined
+          ? options.deviceId
+          : selectedDeviceIdRef.current;
+
+      try {
+        const constraints: MediaStreamConstraints = {
+          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        };
+        const nextStream =
+          await navigator.mediaDevices.getUserMedia(constraints);
+
+        if (generation !== startGenerationRef.current) {
+          nextStream.getTracks().forEach((track) => track.stop());
+          return false;
+        }
+
+        const AudioContextCtor =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext })
+            .webkitAudioContext;
+        if (!AudioContextCtor) {
+          nextStream.getTracks().forEach((track) => track.stop());
+          setError("unsupported");
+          setPhase("error");
+          return false;
+        }
+
+        const context = new AudioContextCtor();
+        if (context.state === "suspended") {
+          await context.resume();
+        }
+
+        if (generation !== startGenerationRef.current) {
+          void context.close();
+          nextStream.getTracks().forEach((track) => track.stop());
+          return false;
+        }
+
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.35;
+        analyser.minDecibels = -90;
+        analyser.maxDecibels = -25;
+        const source = context.createMediaStreamSource(nextStream);
+        source.connect(analyser);
+
+        const trackDeviceId =
+          nextStream.getAudioTracks()[0]?.getSettings().deviceId ??
+          deviceId ??
+          null;
+        if (trackDeviceId) {
+          setSelectedDeviceIdState(trackDeviceId);
+        }
+
+        streamRef.current = nextStream;
+        setStream(nextStream);
+        contextRef.current = context;
+        analyserRef.current = analyser;
+        sourceRef.current = source;
+        noiseFloorRef.current = 0.02;
+        setError(null);
+        setPhase("granted");
+        stopLoop();
+        rafRef.current = requestAnimationFrame(tick);
+        await refreshDevices();
+        return true;
+      } catch (err) {
+        if (generation !== startGenerationRef.current) return false;
+        releaseHardware();
+        setLevels(IDLE_LEVELS);
+        setVoiceActive(false);
+        const mapped = mapMediaError(err);
+        setError(mapped);
+        setPhase(mapped === "permission-denied" ? "denied" : "error");
         return false;
       }
-
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.35;
-      analyser.minDecibels = -90;
-      analyser.maxDecibels = -25;
-      const source = context.createMediaStreamSource(stream);
-      source.connect(analyser);
-
-      streamRef.current = stream;
-      setStream(stream);
-      contextRef.current = context;
-      analyserRef.current = analyser;
-      sourceRef.current = source;
-      noiseFloorRef.current = 0.02;
-      setError(null);
-      setPhase("granted");
-      stopLoop();
-      rafRef.current = requestAnimationFrame(tick);
-      return true;
-    } catch (err) {
-      if (generation !== startGenerationRef.current) return false;
-      releaseHardware();
-      setLevels(IDLE_LEVELS);
-      setVoiceActive(false);
-      const mapped = mapMediaError(err);
-      setError(mapped);
-      setPhase(mapped === "permission-denied" ? "denied" : "error");
-      return false;
-    }
-  }, [releaseHardware, stopLoop, tick]);
+    },
+    [refreshDevices, releaseHardware, stopLoop, tick],
+  );
 
   const stop = useCallback(() => {
     startGenerationRef.current += 1;
@@ -356,8 +428,12 @@ export function useMicAnalyser({
     error,
     phase,
     stream,
+    devices,
+    selectedDeviceId,
+    setSelectedDeviceId,
     start,
     stop,
     setMuted,
+    refreshDevices,
   };
 }

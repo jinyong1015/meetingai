@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { findMeetingIdsByGenerationQuery } from "@/lib/storage/generations";
 import { findMeetingIdsByNoteQuery } from "@/lib/storage/notes";
 import { deleteMeeting, getAllMeetings } from "@/lib/storage/meetings";
+import { findMeetingIdsByTranscriptQuery } from "@/lib/storage/transcripts";
 import { getStorageEstimate } from "@/lib/storage/backup";
 import {
   filterMeetings,
@@ -22,7 +24,7 @@ export function useMeetings() {
     DEFAULT_MEETING_FILTERS,
   );
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [noteMatchedIds, setNoteMatchedIds] = useState<Set<string>>(
+  const [contentMatchedIds, setContentMatchedIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -60,12 +62,19 @@ export function useMeetings() {
     let cancelled = false;
     const query = debouncedQuery.trim();
     if (!query) {
-      setNoteMatchedIds(new Set());
+      setContentMatchedIds(new Set());
       return;
     }
 
-    void findMeetingIdsByNoteQuery(query).then((ids) => {
-      if (!cancelled) setNoteMatchedIds(new Set(ids));
+    void Promise.all([
+      findMeetingIdsByNoteQuery(query),
+      findMeetingIdsByTranscriptQuery(query),
+      findMeetingIdsByGenerationQuery(query),
+    ]).then(([noteIds, transcriptIds, generationIds]) => {
+      if (cancelled) return;
+      setContentMatchedIds(
+        new Set([...noteIds, ...transcriptIds, ...generationIds]),
+      );
     });
 
     return () => {
@@ -79,8 +88,8 @@ export function useMeetings() {
   );
 
   const visibleMeetings = useMemo(
-    () => filterMeetings(meetings, noteMatchedIds, appliedFilters),
-    [meetings, noteMatchedIds, appliedFilters],
+    () => filterMeetings(meetings, contentMatchedIds, appliedFilters),
+    [meetings, contentMatchedIds, appliedFilters],
   );
 
   const hasActiveFilters = computeHasActiveFilters(appliedFilters);

@@ -1,8 +1,16 @@
 import type { SttAdapter, SttTranscribeInput, SttTranscribeResult } from "./types";
 
+function extensionForMime(mimeType: string): string {
+  if (mimeType.includes("mp4") || mimeType.includes("m4a")) return "mp4";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mpeg") || mimeType.includes("mp3")) return "mp3";
+  if (mimeType.includes("wav")) return "wav";
+  return "webm";
+}
+
 /**
  * Local Whisper adapter (OpenAI-compatible /audio/transcriptions).
- * Configure WHISPER_API_URL in `.env.local` to enable.
+ * Points at the faster-whisper server in `/whisper-server` via WHISPER_API_URL.
  */
 export class WhisperSttAdapter implements SttAdapter {
   readonly provider = "whisper" as const;
@@ -16,15 +24,18 @@ export class WhisperSttAdapter implements SttAdapter {
     }
 
     const language = input.language ?? "ko";
+    const model = process.env.WHISPER_MODEL?.trim() || "small";
     const form = new FormData();
     const bytes = new Uint8Array(input.audio);
+    const ext = extensionForMime(input.mimeType || "audio/webm");
     form.append(
       "file",
-      new Blob([bytes], { type: input.mimeType || "audio/wav" }),
-      "chunk.wav",
+      new Blob([bytes], { type: input.mimeType || "audio/webm" }),
+      `meeting.${ext}`,
     );
-    form.append("model", process.env.WHISPER_MODEL?.trim() || "whisper-1");
+    form.append("model", model);
     form.append("language", language);
+    form.append("response_format", "json");
 
     const headers: HeadersInit = {};
     const apiKey = process.env.WHISPER_API_KEY?.trim();
@@ -32,11 +43,20 @@ export class WhisperSttAdapter implements SttAdapter {
       headers.Authorization = `Bearer ${apiKey}`;
     }
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: form,
-    });
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: form,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `로컬 Whisper 서버에 연결하지 못했습니다 (${endpoint}). ` +
+          `whisper-server를 실행했는지 확인하세요. (${detail})`,
+      );
+    }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -47,7 +67,7 @@ export class WhisperSttAdapter implements SttAdapter {
     return {
       text: (data.text ?? "").trim(),
       provider: this.provider,
-      model: process.env.WHISPER_MODEL?.trim() || "whisper-1",
+      model,
       language,
     };
   }

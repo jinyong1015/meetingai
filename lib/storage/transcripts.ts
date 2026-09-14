@@ -54,3 +54,30 @@ export async function deleteMeetingTranscript(meetingId: string) {
     db.close();
   }
 }
+
+export async function getAllTranscripts(): Promise<MeetingTranscript[]> {
+  const db = await openDb();
+  try {
+    if (!db.objectStoreNames.contains(TRANSCRIPTS_STORE)) return [];
+    const tx = db.transaction(TRANSCRIPTS_STORE, "readonly");
+    const rows = await requestToPromise(tx.objectStore(TRANSCRIPTS_STORE).getAll());
+    return rows as MeetingTranscript[];
+  } finally {
+    db.close();
+  }
+}
+
+export async function findMeetingIdsByTranscriptQuery(
+  query: string,
+): Promise<string[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const transcripts = await getAllTranscripts();
+  const ids = new Set<string>();
+  for (const transcript of transcripts) {
+    if (transcript.fullText.toLowerCase().includes(q)) {
+      ids.add(transcript.meetingId);
+    }
+  }
+  return [...ids];
+}

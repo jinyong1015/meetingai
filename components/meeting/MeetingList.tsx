@@ -9,7 +9,9 @@ import { MeetingCard } from "@/components/meeting/MeetingCard";
 import { MeetingFilter } from "@/components/meeting/MeetingFilter";
 import { StorageBar } from "@/components/meeting/StorageBar";
 import { useMeetings } from "@/lib/hooks/useMeetings";
+import { getMeetingGeneration } from "@/lib/storage/generations";
 import { getNotesByMeeting } from "@/lib/storage/notes";
+import { getMeetingTranscript } from "@/lib/storage/transcripts";
 import type { Meeting } from "@/lib/types/meeting";
 
 export function MeetingList() {
@@ -28,9 +30,24 @@ export function MeetingList() {
   const [pendingDelete, setPendingDelete] = useState<Meeting | null>(null);
 
   async function handleExport(meeting: Meeting) {
-    const notes = await getNotesByMeeting(meeting.id);
+    const [notes, transcript, generation] = await Promise.all([
+      getNotesByMeeting(meeting.id),
+      getMeetingTranscript(meeting.id),
+      getMeetingGeneration(meeting.id),
+    ]);
     const blob = new Blob(
-      [JSON.stringify({ meeting, notes }, null, 2)],
+      [
+        JSON.stringify(
+          {
+            meeting,
+            notes,
+            transcript: transcript ?? null,
+            generation: generation ?? null,
+          },
+          null,
+          2,
+        ),
+      ],
       { type: "application/json" },
     );
     const url = URL.createObjectURL(blob);

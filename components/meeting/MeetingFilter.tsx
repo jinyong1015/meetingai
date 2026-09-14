@@ -19,7 +19,7 @@ export function MeetingFilter({ filters, onChange }: MeetingFilterProps) {
         onChange={(event) =>
           onChange({ ...filters, query: event.target.value })
         }
-        placeholder="검색"
+        placeholder="제목·메모·전사·AI 검색"
         aria-label="회의 검색"
         className="field min-w-[12rem] flex-1"
       />

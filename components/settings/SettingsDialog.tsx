@@ -35,8 +35,8 @@ const STT_OPTIONS: Array<{
   },
   {
     value: "whisper",
-    title: "Whisper",
-    description: "로컬 · 이 기기(또는 로컬 서버)에서 전사",
+    title: "Whisper (로컬)",
+    description: "이 PC의 faster-whisper 서버(127.0.0.1:8080)에서 전사 · OpenAI 미사용",
   },
 ];
 

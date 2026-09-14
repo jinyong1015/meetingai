@@ -9,7 +9,7 @@ export type AppSettings = {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: "app",
-  sttProvider: "assemblyai",
+  sttProvider: "whisper",
   updatedAt: new Date(0).toISOString(),
 };
 
