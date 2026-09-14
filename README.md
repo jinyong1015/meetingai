@@ -14,15 +14,15 @@ MeetingAI
 ├── STT (음성 → 텍스트)  … 녹음 종료 · AI 동의 후 처리 (Realtime 미사용)
 │   ├── Whisper      … 로컬 faster-whisper (`whisper-server` · :8080 · OpenAI API 미사용)
 │   └── AssemblyAI   … 클라우드 Pre-recorded (선택)
-└── LLM (요약 · 상세 회의록)  … 어댑터 미구현 · UI·가상 미리보기는 준비됨
-    ├── Ollama       … 로컬
-    └── OpenAI       … 클라우드
+└── LLM (요약 · 상세 회의록)
+    ├── Ollama       … 로컬 (`OLLAMA_BASE_URL` · 기본 :11434)
+    └── OpenAI       … 클라우드 (`OPENAI_API_KEY`)
 ```
 
 | 구분 | 옵션 | 처리 위치 | 현재 |
 |---|---|---|---|
 | **STT** | Whisper / AssemblyAI | **로컬 faster-whisper** / 클라우드 | **구현** (동의 후 전사) |
-| **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **미구현** (결과 탭·가상 데이터 미리보기만) |
+| **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **구현** (설정에서 선택 · 요약·상세) |
 
 설정(SCR-05)에서 STT 엔진을 고를 수 있습니다. 기본값은 **Whisper(로컬)** 입니다.
 
@@ -87,10 +87,11 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [x] 원본 재생 · 다운로드 (REC-06)
 - [x] AI 처리 · 엔진별 전송 동의 UX (`[음성만 저장]` / `[AI 회의록 생성]`)
 - [x] 동의 후 STT 전사 (Whisper 또는 AssemblyAI)
+- [x] 동의 후 **LLM** 요약·상세 생성 (Ollama 또는 OpenAI)
 - [x] 회의 결과 탭 (**전사문 · 요약 · 상세**, 기본 탭=전사문)
 - [x] 가상 데이터로 요약·상세 미리보기
 - [x] 전사문 · 생성 결과 IndexedDB 저장 · 새로고침 복원
-- [ ] 동의 후 **실제 LLM** 요약·상세 (SCR-03 · 현재는 STT까지)
+- [ ] SCR-03 처리 단계 UI
 
 ### 4. 메모 입력 (NOTE-01~05) — 완료
 - [x] 메모 추가 · 수정 · 삭제
@@ -112,10 +113,10 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [ ] 화자 구분 · 구간별 시점 (AI-03)
 - [ ] SCR-03 처리 단계 UI · 재조회(AI-05)
 
-### 6. SCR-03 AI 처리 (LLM) — 약 15%
-- [ ] LLM 어댑터 (Ollama · OpenAI)
-- [ ] 실제 LLM 요약 · 상세 생성 API
-- [x] AI 동의 UX (SCR-02에서 STT 게이트 · LLM은 후속)
+### 6. SCR-03 AI 처리 (LLM) — 약 70%
+- [x] LLM 어댑터 (Ollama · OpenAI)
+- [x] 실제 LLM 요약 · 상세 생성 API (`POST /api/generations`)
+- [x] AI 동의 UX (엔진별 로컬/클라우드 전송 안내)
 - [x] 가상 데이터로 요약·상세 결과 미리보기
 - [ ] 처리 단계 · 경과 시간 · 사용 엔진 UI
 
@@ -130,10 +131,9 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 
 ### 8. SCR-05 설정 — 약 40%
 - [x] 헤더·녹음 화면 설정 대화상자
-- [x] AI 엔진 탭: **STT 선택** (Whisper · AssemblyAI)
-- [x] 엔진 연결 상태 (환경변수 설정 여부, 키 미노출)
+- [x] AI 엔진 탭: **STT** (Whisper · AssemblyAI) · **LLM** (Ollama · OpenAI)
+- [x] 엔진 연결 상태 (키 미노출 · Ollama 연결 프로브)
 - [ ] 일반 설정
-- [ ] LLM 엔진 선택
 - [ ] AI 프롬프트 관리
 - [x] 목록 하단 백업·복원
 
@@ -151,15 +151,18 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 | `/meetings/new` | SCR-02 Step 1 새 회의 생성 |
 | `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · 결과 탭 |
 | `app/api/stt/*` | 전사 · 엔진 상태 (서버 전용) |
+| `app/api/generations` | OpenAI 요약·상세 생성 (서버 전용) |
+| `app/api/llm/status` | LLM 엔진 연결 상태 |
 | `whisper-server/` | 로컬 faster-whisper (OpenAI API 없음) |
 | `components/recording/*` | RecordMeetingScreen · AudioWaveform · AudioPlayer · AiConsentDialog |
 | `components/review/*` | MeetingResultTabs · SummaryPanel · DetailPanel |
-| `components/settings/*` | SettingsDialog (STT 선택) |
+| `components/settings/*` | SettingsDialog (STT 선택 · OpenAI 상태) |
 | `lib/hooks/useMicAnalyser` | 장치 선택 · AnalyserNode · `voiceActive` |
 | `lib/stt/*` | AssemblyAI · Whisper 어댑터 |
+| `lib/llm/*` | Ollama · OpenAI 어댑터 · 프롬프트 · Structured Outputs |
 | `lib/storage/*` | IndexedDB 전체 스토어 |
 
-**아직 없음:** 실제 LLM 연동, SCR-03 처리 단계 UI, SCR-04 전용 Route·확정·웹훅, 실시간(Realtime) 전사
+**아직 없음:** SCR-03 처리 단계 UI, SCR-04 전용 Route·확정·웹훅, 실시간(Realtime) 전사
 
 ### 저장 시점 (중요)
 
@@ -170,7 +173,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 | 녹음 중 | 예 (`audioChunks` · 약 5초) |
 | 녹음 종료 후 `[음성만 저장]` | 예 (`meetingAudio` · STT 없음) |
 | 녹음 종료 후 `[AI 회의록 생성]` · STT 완료 | 예 (`transcripts`) |
-| 가상 미리보기 / 상세 수정 저장 | 예 (`generations` · `summaryPreview`) |
+| OpenAI/Ollama 요약·상세 완료 / 가상 미리보기 / 상세 수정 저장 | 예 (`generations` · `summaryPreview`) |
 
 ---
 
@@ -196,12 +199,21 @@ Health 확인: http://127.0.0.1:8080/health
 
 ```bash
 npm install
-cp .env.example .env.local   # whisper 기본값 포함
+cp .env.example .env.local   # whisper · ollama 기본값 포함
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000` 접속 → **설정**에서 STT = Whisper 확인  
-→ 녹음 종료 → AI 동의 → **AI 회의록 생성**
+### 3) 로컬 Ollama (기본 LLM)
+
+[Ollama](https://ollama.com) 설치 후 모델을 받아 두세요.
+
+```powershell
+ollama serve
+ollama pull gemma4:26b
+```
+
+브라우저에서 `http://localhost:3000` 접속 → **설정**에서  
+STT = Whisper, LLM = Ollama 확인 → 녹음 종료 → AI 동의 → **AI 회의록 생성**
 
 ### 환경변수 (`.env.local`)
 
@@ -212,16 +224,22 @@ npm run dev
 | `WHISPER_MODEL` | 로컬 모델 크기 (`small` 권장) |
 | `WHISPER_API_KEY` | 로컬 서버는 불필요 |
 | `ASSEMBLYAI_API_KEY` | AssemblyAI 사용 시에만 |
+| `LLM_PROVIDER` | `ollama` (기본) 또는 `openai` — 설정 UI 선택값이 우선 |
+| `OPENAI_API_KEY` | OpenAI 사용 시 |
+| `OPENAI_MODEL` | 기본 `gpt-4.1-mini-2025-04-14` |
+| `OLLAMA_BASE_URL` | 기본 `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL` | `ollama list`에 나온 이름 (예: `gemma4:26b`) |
 
-> `NEXT_PUBLIC_` 접두사로 API 키를 두지 마세요. 브라우저에 노출됩니다.
+> `NEXT_PUBLIC_` 접두사로 API 키를 두지 마세요. 브라우저에 노출됩니다.  
+> `.env.local`을 바꾼 뒤에는 **개발 서버를 재시작**해야 키가 반영됩니다.
 
 ---
 
 ## 다음에 할 일 (권장 순서)
 
-1. AI 동의 후 **SCR-03** (실제 LLM 요약·상세 · Ollama/OpenAI)  
+1. **SCR-03** 처리 단계 UI  
 2. **SCR-04** 전용 Route · 확정 · **SCR-06** 웹훅  
-3. SCR-05 일반 설정 · LLM · 프롬프트 본편
+3. SCR-05 일반 설정 · 프롬프트 본편
 
 ---
 

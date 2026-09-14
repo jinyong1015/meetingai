@@ -1,4 +1,5 @@
 import { openDb, requestToPromise, SETTINGS_STORE } from "@/lib/storage/db";
+import type { LlmProvider } from "@/lib/llm/types";
 import type { SttProvider } from "@/lib/stt/types";
 import {
   DEFAULT_APP_SETTINGS,
@@ -8,6 +9,10 @@ import {
 
 function isSttProvider(value: unknown): value is SttProvider {
   return value === "assemblyai" || value === "whisper";
+}
+
+function isLlmProvider(value: unknown): value is LlmProvider {
+  return value === "openai" || value === "ollama";
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
@@ -26,6 +31,9 @@ export async function getAppSettings(): Promise<AppSettings> {
       sttProvider: isSttProvider(raw.sttProvider)
         ? raw.sttProvider
         : DEFAULT_APP_SETTINGS.sttProvider,
+      llmProvider: isLlmProvider(raw.llmProvider)
+        ? raw.llmProvider
+        : DEFAULT_APP_SETTINGS.llmProvider,
       updatedAt:
         typeof raw.updatedAt === "string"
           ? raw.updatedAt
@@ -37,11 +45,12 @@ export async function getAppSettings(): Promise<AppSettings> {
 }
 
 export async function saveAppSettings(
-  patch: Pick<AppSettings, "sttProvider">,
+  patch: Pick<AppSettings, "sttProvider" | "llmProvider">,
 ): Promise<AppSettings> {
   const next: AppSettings = {
     id: "app",
     sttProvider: patch.sttProvider,
+    llmProvider: patch.llmProvider,
     updatedAt: new Date().toISOString(),
   };
 

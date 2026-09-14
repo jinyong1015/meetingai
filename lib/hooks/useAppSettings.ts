@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getAppSettings } from "@/lib/storage/settings";
+import type { LlmProvider } from "@/lib/llm/types";
 import type { SttProvider } from "@/lib/stt/types";
 import {
   DEFAULT_APP_SETTINGS,
@@ -25,7 +26,7 @@ export function useAppSettings() {
 
     function onChanged(event: Event) {
       const detail = (event as CustomEvent<AppSettings>).detail;
-      if (detail?.sttProvider) {
+      if (detail?.sttProvider || detail?.llmProvider) {
         setSettings(detail);
       } else {
         void getAppSettings().then((loaded) => {
@@ -45,5 +46,6 @@ export function useAppSettings() {
     settings,
     ready,
     sttProvider: settings.sttProvider as SttProvider,
+    llmProvider: settings.llmProvider as LlmProvider,
   };
 }

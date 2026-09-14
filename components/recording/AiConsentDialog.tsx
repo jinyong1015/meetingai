@@ -1,12 +1,19 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import type { LlmProvider } from "@/lib/llm/types";
 import type { SttProvider } from "@/lib/stt/types";
-import { sttProviderLabel } from "@/lib/types/settings";
+import {
+  isCloudLlm,
+  llmProviderLabel,
+  sttProviderLabel,
+} from "@/lib/types/settings";
 
 type AiConsentDialogProps = {
   open: boolean;
   sttProvider: SttProvider;
+  llmProvider: LlmProvider;
+  llmConfigured: boolean;
   onSaveAudioOnly: () => void;
   onGenerateAi: () => void;
   onCancel: () => void;
@@ -19,6 +26,8 @@ function isCloudStt(provider: SttProvider) {
 export function AiConsentDialog({
   open,
   sttProvider,
+  llmProvider,
+  llmConfigured,
   onSaveAudioOnly,
   onGenerateAi,
   onCancel,
@@ -43,8 +52,13 @@ export function AiConsentDialog({
 
   if (!open) return null;
 
-  const cloud = isCloudStt(sttProvider);
+  const cloudStt = isCloudStt(sttProvider);
+  const cloudLlm = llmConfigured && isCloudLlm(llmProvider);
+  const localLlm = llmConfigured && !isCloudLlm(llmProvider);
   const sttName = sttProviderLabel(sttProvider);
+  const llmName = llmProviderLabel(llmProvider);
+  const hasExternal = cloudStt || cloudLlm;
+  const fullyLocal = !cloudStt && localLlm;
 
   return (
     <div
@@ -72,31 +86,64 @@ export function AiConsentDialog({
               <div className="flex justify-between gap-3">
                 <dt className="text-[var(--muted)]">STT</dt>
                 <dd className="font-medium">
-                  {sttName} ({cloud ? "클라우드" : "로컬"})
+                  {sttName} ({cloudStt ? "클라우드" : "로컬"})
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-[var(--muted)]">LLM</dt>
-                <dd className="font-medium text-[var(--muted)]">미연결</dd>
+                <dd className="font-medium">
+                  {llmConfigured
+                    ? `${llmName} (${cloudLlm ? "클라우드" : "로컬"})`
+                    : "미설정"}
+                </dd>
               </div>
             </dl>
           </div>
 
-          {cloud ? (
+          {fullyLocal ? (
+            <div className="text-[var(--muted)]">
+              <p>
+                음성·전사문·메모는 이 기기(로컬 STT·LLM)에서만 처리되며 외부 AI
+                서비스로 전송되지 않습니다.
+              </p>
+            </div>
+          ) : hasExternal ? (
             <div className="text-[var(--muted)]">
               <p>
                 AI 처리 과정에서 다음 데이터가 외부 AI 서비스로 전송됩니다.
               </p>
-              <p className="mt-3 font-medium text-[var(--foreground)]">
-                {sttName}
-              </p>
-              <ul className="mt-1 list-disc space-y-1 pl-5">
-                <li>회의 음성</li>
-              </ul>
-              <p className="mt-3">
-                요약·상세 LLM은 아직 연결되지 않아, 지금은 음성 인식(전사)만
-                실행합니다.
-              </p>
+              {cloudStt && (
+                <>
+                  <p className="mt-3 font-medium text-[var(--foreground)]">
+                    {sttName}
+                  </p>
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    <li>회의 음성</li>
+                  </ul>
+                </>
+              )}
+              {cloudLlm && (
+                <>
+                  <p className="mt-3 font-medium text-[var(--foreground)]">
+                    {llmName}
+                  </p>
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    <li>전사문</li>
+                    <li>‘AI 반영’으로 선택한 메모</li>
+                    <li>생성에 사용하는 회의 정보·프롬프트</li>
+                  </ul>
+                </>
+              )}
+              {localLlm && (
+                <p className="mt-3">
+                  요약·상세는 로컬 {llmName}에서 처리됩니다.
+                </p>
+              )}
+              {!llmConfigured && (
+                <p className="mt-3">
+                  LLM이 설정되지 않아 지금은 음성 인식(전사)만 실행합니다.
+                </p>
+              )}
             </div>
           ) : (
             <div className="text-[var(--muted)]">
@@ -105,8 +152,8 @@ export function AiConsentDialog({
                 전송되지 않습니다.
               </p>
               <p className="mt-3">
-                요약·상세 LLM은 아직 연결되지 않아, 지금은 음성 인식(전사)만
-                실행합니다.
+                요약·상세 LLM이 설정되지 않아, 지금은 음성 인식(전사)만
+                실행합니다. 설정에서 Ollama 또는 OpenAI를 연결해 주세요.
               </p>
             </div>
           )}

@@ -34,6 +34,7 @@ import {
   saveMeetingGeneration,
 } from "@/lib/storage/generations";
 import { getMeeting, patchMeeting } from "@/lib/storage/meetings";
+import { getNotesByMeeting } from "@/lib/storage/notes";
 import {
   deleteMeetingTranscript,
   getMeetingTranscript,
@@ -44,7 +45,7 @@ import type { MeetingDetailMinutes } from "@/lib/types/detail";
 import { formatDetailMinutesText } from "@/lib/types/detail";
 import type { MeetingResultTab } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
-import { sttProviderLabel } from "@/lib/types/settings";
+import { sttProviderLabel, llmProviderLabel } from "@/lib/types/settings";
 import type { TranscriptSegment } from "@/lib/types/transcript";
 import { createId, formatTimestamp } from "@/lib/utils/format-time";
 
@@ -109,6 +110,8 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const [summaryPending, setSummaryPending] = useState(false);
   const [detailPending, setDetailPending] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [llmConfigured, setLlmConfigured] = useState(false);
+  const [llmError, setLlmError] = useState<string | null>(null);
   const [savedAudio, setSavedAudio] = useState<MeetingAudio | null>(null);
   const [audioRecovered, setAudioRecovered] = useState(false);
   const [audioSaveError, setAudioSaveError] = useState<string | null>(null);
@@ -133,7 +136,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const lastChunkSavedAtRef = useRef<string | null>(null);
   const chunkPersistErrorRef = useRef(false);
 
-  const { sttProvider } = useAppSettings();
+  const { sttProvider, llmProvider } = useAppSettings();
   const {
     start: startRecorder,
     pause: pauseRecorder,
@@ -163,6 +166,30 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
 
   useEffect(() => {
     let cancelled = false;
+    async function loadLlmStatus() {
+      try {
+        const res = await fetch("/api/llm/status", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          engines?: {
+            openai?: { configured?: boolean };
+            ollama?: { configured?: boolean };
+          };
+        };
+        const engine = data.engines?.[llmProvider];
+        setLlmConfigured(Boolean(engine?.configured));
+      } catch {
+        if (!cancelled) setLlmConfigured(false);
+      }
+    }
+    void loadLlmStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [llmProvider]);
+
+  useEffect(() => {
+    let cancelled = false;
 
     async function load() {
       const [loaded, transcript, generation, playable] = await Promise.all([
@@ -186,7 +213,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         setDetailText(generation.detailText);
         setDetailMinutes(generation.detailMinutes ?? null);
         setSummarySourceLabel(
-          generation.source === "mock" ? "가상 데이터 미리보기" : null,
+          generation.source === "mock"
+            ? "가상 데이터 미리보기"
+            : llmProviderLabel(llmProvider),
         );
         setGenerationSource(generation.source);
       }
@@ -359,12 +388,132 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     }
   }
 
+  async function generateWithLlm(transcriptText: string) {
+    if (!llmConfigured) {
+      setLlmError(
+        `${llmProviderLabel(llmProvider)}에 연결할 수 없어 요약·상세를 생성하지 않았습니다. 설정과 .env.local을 확인한 뒤 개발 서버를 다시 시작하세요.`,
+      );
+      return;
+    }
+
+    setLlmError(null);
+    setSummaryPending(true);
+    setDetailPending(true);
+    setSummarySourceLabel(null);
+    setGenerationSource("llm");
+    void persist({ displayStatus: "AI 처리 중" });
+
+    try {
+      const notes = await getNotesByMeeting(meetingId);
+      const aiNotes = notes
+        .filter((note) => note.includeInAI && note.content.trim())
+        .map((note) => ({
+          content: note.content,
+          timestampSec: note.timestampSec,
+          important: note.important,
+        }));
+
+      const res = await fetch("/api/generations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "both",
+          provider: llmProvider,
+          meeting: {
+            title: titleRef.current,
+            startedAt: meeting?.startedAt ?? "",
+            attendees: meeting?.attendees ?? "",
+            tags: meeting?.tags ?? [],
+          },
+          transcript: transcriptText,
+          notes: aiNotes,
+        }),
+      });
+
+      const data = (await res.json()) as {
+        summaryText?: string;
+        detailText?: string;
+        detailMinutes?: MeetingDetailMinutes;
+        model?: string;
+        provider?: string;
+        errors?: { summary?: string; detail?: string };
+        error?: string;
+      };
+
+      if (!res.ok && !data.summaryText && !data.detailText) {
+        throw new Error(data.error || "회의록 생성에 실패했습니다.");
+      }
+
+      const summary = data.summaryText?.trim() || null;
+      const detailBody = data.detailText?.trim() || null;
+      const detail = data.detailMinutes ?? null;
+      const engineLabel = llmProviderLabel(llmProvider);
+
+      if (summary) {
+        setSummaryText(summary);
+        setSummarySourceLabel(
+          data.model ? `${engineLabel} · ${data.model}` : engineLabel,
+        );
+      }
+      setSummaryPending(false);
+
+      if (detail && detailBody) {
+        setDetailMinutes(detail);
+        setDetailText(detailBody);
+      }
+      setDetailPending(false);
+
+      if (summary || detailBody || detail) {
+        await saveMeetingGeneration({
+          meetingId,
+          summaryText: summary,
+          detailText: detailBody,
+          detailMinutes: detail,
+          source: "llm",
+        });
+      }
+
+      if (summary) {
+        await persist({
+          summaryPreview:
+            summary.split("\n").find((line) => line.trim()) ?? summary,
+          displayStatus: "검토 필요",
+        });
+      } else {
+        await persist({ displayStatus: "검토 필요" });
+      }
+
+      const partialErrors = [
+        data.errors?.summary,
+        data.errors?.detail,
+        !res.ok ? data.error : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      if (partialErrors) {
+        setLlmError(partialErrors);
+      }
+
+      if (summary) setResultTab("summary");
+      else if (detail) setResultTab("detail");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "회의록 생성에 실패했습니다.";
+      setLlmError(message);
+      await persist({ displayStatus: "처리 실패" });
+    } finally {
+      setSummaryPending(false);
+      setDetailPending(false);
+    }
+  }
+
   async function transcribeRecording(audio: {
     blob: Blob;
     mimeType: string;
   }) {
     setSttPending(true);
     setSttError(null);
+    setLlmError(null);
     void persist({ displayStatus: "AI 처리 중" });
     try {
       const form = new FormData();
@@ -406,7 +555,17 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         segments,
         provider: data.provider ?? sttProvider,
       });
-      await persist({ displayStatus: "검토 필요" });
+
+      if (!text) {
+        setLlmError(
+          "전사 결과가 비어 있어 요약·상세를 생성하지 않았습니다.",
+        );
+        await persist({ displayStatus: "검토 필요" });
+        return;
+      }
+
+      setSttPending(false);
+      await generateWithLlm(text);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "음성 인식에 실패했습니다.";
@@ -471,6 +630,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     setShowReview(false);
     setSttError(null);
     setSttPending(false);
+    setLlmError(null);
     setSummaryText(null);
     setDetailText(null);
     setDetailMinutes(null);
@@ -1050,26 +1210,36 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       >
         <div className="flex min-w-0 flex-col gap-6">
           {showReview && recordingState === "idle" && (
-            <MeetingResultTabs
-              activeTab={resultTab}
-              onTabChange={setResultTab}
-              segments={reviewSegments}
-              providerLabel={
-                reviewSegments[0]?.provider === "mock"
-                  ? "가상 데이터"
-                  : sttProviderLabel(sttProvider)
-              }
-              transcriptPending={sttPending}
-              transcriptError={sttError}
-              summaryText={summaryText}
-              detailMinutes={detailMinutes}
-              detailText={detailText}
-              summaryPending={summaryPending}
-              detailPending={detailPending}
-              summarySourceLabel={summarySourceLabel}
-              detailSourceLabel={summarySourceLabel}
-              onSaveDetail={handleSaveDetail}
-            />
+            <>
+              {llmError && (
+                <p
+                  className="mb-3 rounded-xl bg-[var(--danger)]/10 px-4 py-3 text-sm text-[var(--danger)]"
+                  role="alert"
+                >
+                  {llmError}
+                </p>
+              )}
+              <MeetingResultTabs
+                activeTab={resultTab}
+                onTabChange={setResultTab}
+                segments={reviewSegments}
+                providerLabel={
+                  reviewSegments[0]?.provider === "mock"
+                    ? "가상 데이터"
+                    : sttProviderLabel(sttProvider)
+                }
+                transcriptPending={sttPending}
+                transcriptError={sttError}
+                summaryText={summaryText}
+                detailMinutes={detailMinutes}
+                detailText={detailText}
+                summaryPending={summaryPending}
+                detailPending={detailPending}
+                summarySourceLabel={summarySourceLabel}
+                detailSourceLabel={summarySourceLabel}
+                onSaveDetail={handleSaveDetail}
+              />
+            </>
           )}
 
           <div className="glass-panel rounded-[var(--radius)] p-5 sm:p-6">
@@ -1120,6 +1290,14 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                 </dd>
               </div>
               <div>
+                <dt className="text-xs text-[var(--muted)]">LLM 엔진</dt>
+                <dd className="mt-1 text-base font-medium">
+                  {llmConfigured
+                    ? llmProviderLabel(llmProvider)
+                    : `${llmProviderLabel(llmProvider)} (미연결)`}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-xs text-[var(--muted)]">저장</dt>
                 <dd className="mt-1 text-sm leading-relaxed text-[var(--muted)]">
                   음성 조각·메모는 이 브라우저 IndexedDB에 저장됩니다
@@ -1142,6 +1320,8 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       <AiConsentDialog
         open={consentOpen}
         sttProvider={sttProvider}
+        llmProvider={llmProvider}
+        llmConfigured={llmConfigured}
         onCancel={() => setConsentOpen(false)}
         onSaveAudioOnly={handleSaveAudioOnly}
         onGenerateAi={handleGenerateAi}
