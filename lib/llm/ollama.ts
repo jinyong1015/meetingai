@@ -15,6 +15,10 @@ import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
 } from "@/lib/types/settings";
+import {
+  normalizeLoopbackUrl,
+  pickPreferredOllamaModel,
+} from "@/lib/localEngines/loopback";
 
 export type OllamaClientConfig = {
   baseUrl: string;
@@ -40,27 +44,39 @@ export type OllamaProbeResult = {
   reachable: boolean;
   detail: string;
   models?: string[];
+  /** Resolved base URL actually used (after loopback normalize). */
+  baseUrl?: string;
+  /** Preferred model if installed, otherwise a suggested installed model. */
+  resolvedModel?: string;
+  modelInstalled?: boolean;
 };
 
 /** Browser or server: probe Ollama /api/tags. */
 export async function probeOllama(
   config?: Partial<OllamaClientConfig>,
-  timeoutMs = 3000,
+  timeoutMs = 5000,
 ): Promise<OllamaProbeResult> {
-  const baseUrl = (
-    config?.baseUrl?.trim() || getOllamaBaseUrl()
-  ).replace(/\/$/, "");
-  const model = config?.model?.trim() || getOllamaModel();
+  const rawBase = (config?.baseUrl?.trim() || getOllamaBaseUrl()).replace(
+    /\/$/,
+    "",
+  );
+  const baseUrl = normalizeLoopbackUrl(rawBase);
+  const preferredModel = config?.model?.trim() || getOllamaModel();
   try {
     const res = await fetch(`${baseUrl}/api/tags`, {
       method: "GET",
       cache: "no-store",
+      mode: "cors",
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       return {
         reachable: false,
-        detail: `연결 실패 · HTTP ${res.status} (${baseUrl})`,
+        baseUrl,
+        detail:
+          res.status === 403
+            ? `CORS 차단(HTTP 403) · Ollama를 재시작할 때 OLLAMA_ORIGINS에 '${typeof window !== "undefined" ? window.location.origin : "앱 Origin"}' 을 넣으세요.`
+            : `연결 실패 · HTTP ${res.status} (${baseUrl})`,
       };
     }
     const data = (await res.json()) as {
@@ -69,34 +85,50 @@ export async function probeOllama(
     const models = (data.models ?? [])
       .map((m) => m.name)
       .filter((name): name is string => Boolean(name));
-    const hasModel = models.some(
-      (name) => name === model || name.startsWith(`${model}:`),
+    const resolvedModel = pickPreferredOllamaModel(models, preferredModel);
+    const modelInstalled = models.some(
+      (name) =>
+        name === preferredModel || name.startsWith(`${preferredModel}:`),
     );
     if (models.length === 0) {
       return {
         reachable: true,
-        detail: `연결됨 · 설치된 모델 없음 · \`ollama pull ${model}\``,
+        baseUrl,
         models,
+        resolvedModel: preferredModel,
+        modelInstalled: false,
+        detail: `연결됨 · 설치된 모델 없음 · \`ollama pull ${preferredModel}\``,
       };
     }
-    if (!hasModel) {
+    if (!modelInstalled) {
       return {
         reachable: true,
-        detail: `연결됨 · 모델 '${model}' 미설치 · \`ollama pull ${model}\``,
+        baseUrl,
         models,
+        resolvedModel,
+        modelInstalled: false,
+        detail: `연결됨 · 설정 모델 '${preferredModel}' 없음 → '${resolvedModel}' 사용 가능 · 필요 시 \`ollama pull ${preferredModel}\``,
       };
     }
     return {
       reachable: true,
-      detail: `브라우저에서 사용 가능 · 모델 ${model}`,
+      baseUrl,
       models,
+      resolvedModel: preferredModel,
+      modelInstalled: true,
+      detail: `브라우저에서 사용 가능 · 모델 ${preferredModel}`,
     };
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "앱 Origin";
     return {
       reachable: false,
+      baseUrl,
       detail:
-        `연결 실패 · Ollama 미실행이거나 CORS(OLLAMA_ORIGINS)가 이 사이트 Origin을 허용하지 않습니다. ` +
-        `https://ollama.com/download 설치 후 \`OLLAMA_ORIGINS\`에 앱 Origin을 넣고 \`ollama pull ${model}\` 하세요.`,
+        `연결 실패 (${baseUrl}). Ollama 실행 여부와 CORS를 확인하세요. ` +
+        `PowerShell: \`$env:OLLAMA_ORIGINS="${origin},*"; ollama serve\` ` +
+        `· URL 호스트는 주소창과 같게 (localhost ↔ 127.0.0.1). (${message})`,
     };
   }
 }
@@ -115,7 +147,7 @@ async function createStructuredChat(
   },
   config: OllamaClientConfig,
 ): Promise<string> {
-  const baseUrl = config.baseUrl.replace(/\/$/, "");
+  const baseUrl = normalizeLoopbackUrl(config.baseUrl.replace(/\/$/, ""));
   const model = config.model.trim() || DEFAULT_OLLAMA_MODEL;
 
   let res: Response;
@@ -123,6 +155,7 @@ async function createStructuredChat(
     res = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      mode: "cors",
       body: JSON.stringify({
         model,
         stream: false,
@@ -134,10 +167,13 @@ async function createStructuredChat(
       }),
       signal: AbortSignal.timeout(180_000),
     });
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "앱 Origin";
     throw new Error(
-      `Ollama에 연결하지 못했습니다. '${baseUrl}'에서 Ollama가 실행 중인지, ` +
-        `OLLAMA_ORIGINS에 이 앱 Origin이 포함되는지 확인하세요.`,
+      `Ollama에 연결하지 못했습니다 (${baseUrl}). ` +
+        `OLLAMA_ORIGINS에 ${origin} 을 넣고 재시작하세요. URL은 주소창과 같은 호스트(localhost/127.0.0.1)를 쓰세요. (${detail})`,
     );
   }
 

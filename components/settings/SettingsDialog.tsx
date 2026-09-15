@@ -333,6 +333,24 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         ]);
         if (cancelled) return;
 
+        let draftAfterProbe = nextDraft;
+        if (ollamaProbe.reachable) {
+          const patch: Partial<DraftState> = {};
+          if (ollamaProbe.baseUrl && ollamaProbe.baseUrl !== nextDraft.ollamaBaseUrl) {
+            patch.ollamaBaseUrl = ollamaProbe.baseUrl;
+          }
+          if (
+            ollamaProbe.resolvedModel &&
+            ollamaProbe.resolvedModel !== nextDraft.ollamaModel
+          ) {
+            patch.ollamaModel = ollamaProbe.resolvedModel;
+          }
+          if (Object.keys(patch).length > 0) {
+            draftAfterProbe = { ...nextDraft, ...patch };
+            setDraft(draftAfterProbe);
+          }
+        }
+
         setSttEngines({
           assemblyai: nextStt?.assemblyai ?? {
             configured: false,
@@ -531,6 +549,16 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           model: draft.ollamaModel,
         }),
       ]);
+
+      setDraft((prev) => {
+        const next = { ...prev };
+        if (ollamaProbe.baseUrl) next.ollamaBaseUrl = ollamaProbe.baseUrl;
+        if (ollamaProbe.resolvedModel) {
+          next.ollamaModel = ollamaProbe.resolvedModel;
+        }
+        return next;
+      });
+
       setSttEngines((prev) => ({
         assemblyai: prev?.assemblyai ?? {
           configured: false,
@@ -558,10 +586,15 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         },
       }));
       setSavedHint(
-        whisperProbe.reachable || ollamaProbe.reachable
-          ? "로컬 엔진 연결을 다시 확인했습니다."
-          : "로컬 엔진에 연결하지 못했습니다. CORS·Origin·실행 상태를 확인하세요.",
+        ollamaProbe.reachable
+          ? ollamaProbe.modelInstalled
+            ? "Ollama 연결 OK."
+            : `Ollama 연결 OK · 모델을 '${ollamaProbe.resolvedModel}'로 맞췄습니다. 저장하세요.`
+          : ollamaProbe.detail,
       );
+      if (!ollamaProbe.reachable) {
+        setError(ollamaProbe.detail);
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "연결 테스트에 실패했습니다.",

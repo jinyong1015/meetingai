@@ -12,8 +12,8 @@ export type PromptKind = "summary" | "detail";
 export const DEFAULT_WHISPER_API_URL =
   "http://127.0.0.1:8080/v1/audio/transcriptions";
 export const DEFAULT_WHISPER_MODEL = "small";
-export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
-export const DEFAULT_OLLAMA_MODEL = "qwen3:8b";
+export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
+export const DEFAULT_OLLAMA_MODEL = "gemma4:26b";
 
 export type AppSettings = {
   /** Singleton key for IndexedDB. */

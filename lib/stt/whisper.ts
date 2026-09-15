@@ -8,6 +8,7 @@ import {
   DEFAULT_WHISPER_API_URL,
   DEFAULT_WHISPER_MODEL,
 } from "@/lib/types/settings";
+import { normalizeLoopbackUrl } from "@/lib/localEngines/loopback";
 
 function extensionForMime(mimeType: string): string {
   if (mimeType.includes("mp4") || mimeType.includes("m4a")) return "mp4";
@@ -80,7 +81,10 @@ export async function probeWhisper(
   endpoint: string,
   timeoutMs = 3000,
 ): Promise<WhisperProbeResult> {
-  const healthUrl = whisperHealthUrl(endpoint.trim() || DEFAULT_WHISPER_API_URL);
+  const normalized = normalizeLoopbackUrl(
+    endpoint.trim() || DEFAULT_WHISPER_API_URL,
+  );
+  const healthUrl = whisperHealthUrl(normalized);
   try {
     const res = await fetch(healthUrl, {
       method: "GET",
@@ -125,7 +129,7 @@ export async function transcribeWithWhisper(
   input: SttTranscribeInput,
   config: WhisperClientConfig,
 ): Promise<SttTranscribeResult> {
-  const endpoint = config.endpoint.trim();
+  const endpoint = normalizeLoopbackUrl(config.endpoint.trim());
   if (!endpoint) {
     throw new Error(
       "Whisper API URL이 없습니다. 설정에서 로컬 Whisper 주소를 입력하세요.",
