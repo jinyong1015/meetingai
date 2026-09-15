@@ -19,14 +19,21 @@ function getApiKey(): string {
   return key;
 }
 
-async function uploadAudio(apiKey: string, audio: Buffer): Promise<string> {
+async function uploadAudio(
+  apiKey: string,
+  audio: ArrayBuffer | Uint8Array,
+): Promise<string> {
+  const body =
+    audio instanceof Uint8Array
+      ? audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength)
+      : audio;
   const res = await fetch(`${ASSEMBLYAI_BASE}/v2/upload`, {
     method: "POST",
     headers: {
       authorization: apiKey,
       "content-type": "application/octet-stream",
     },
-    body: new Uint8Array(audio),
+    body: body as ArrayBuffer,
   });
 
   if (!res.ok) {

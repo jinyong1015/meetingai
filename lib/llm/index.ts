@@ -5,6 +5,8 @@ import {
   getOllamaModel,
   isOllamaConfigured,
   probeOllama,
+  generateSummaryWithOllama,
+  generateDetailWithOllama,
 } from "./ollama";
 import type { LlmAdapter, LlmProvider } from "./types";
 
@@ -21,6 +23,8 @@ export {
   getOllamaModel,
   isOllamaConfigured,
   probeOllama,
+  generateSummaryWithOllama,
+  generateDetailWithOllama,
 };
 
 export function isLlmProvider(value: unknown): value is LlmProvider {

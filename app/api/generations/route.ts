@@ -72,12 +72,21 @@ export async function POST(request: Request) {
       );
     }
 
+    if (provider === "ollama") {
+      return NextResponse.json(
+        {
+          error:
+            "로컬 Ollama는 브라우저에서 직접 호출합니다. /api/generations 대신 설정에 등록된 Ollama 주소로 생성하세요.",
+        },
+        { status: 410 },
+      );
+    }
+
     if (!isLlmProviderConfigured(provider)) {
-      const hint =
-        provider === "openai"
-          ? "OPENAI_API_KEY가 설정되지 않았습니다."
-          : "Ollama 연결을 확인하세요. OLLAMA_BASE_URL과 모델 설치 상태를 점검해 주세요.";
-      return NextResponse.json({ error: hint }, { status: 400 });
+      return NextResponse.json(
+        { error: "OPENAI_API_KEY가 설정되지 않았습니다." },
+        { status: 400 },
+      );
     }
 
     const input: LlmGenerateInput = {

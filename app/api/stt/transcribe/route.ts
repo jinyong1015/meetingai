@@ -47,15 +47,24 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!isProviderConfigured(provider)) {
-      const hint =
-        provider === "whisper"
-          ? "WHISPER_API_URL이 설정되지 않았습니다."
-          : "ASSEMBLYAI_API_KEY가 설정되지 않았습니다.";
-      return NextResponse.json({ error: hint }, { status: 400 });
+    if (provider === "whisper") {
+      return NextResponse.json(
+        {
+          error:
+            "로컬 Whisper는 브라우저에서 직접 호출합니다. /api/stt/transcribe 대신 설정에 등록된 Whisper URL로 전송하세요.",
+        },
+        { status: 410 },
+      );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
+    if (!isProviderConfigured(provider)) {
+      return NextResponse.json(
+        { error: "ASSEMBLYAI_API_KEY가 설정되지 않았습니다." },
+        { status: 400 },
+      );
+    }
+
+    const buffer = new Uint8Array(await file.arrayBuffer());
     const adapter = createSttAdapter(provider);
     const result = await adapter.transcribe({
       audio: buffer,

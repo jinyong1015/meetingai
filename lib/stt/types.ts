@@ -1,7 +1,8 @@
 export type SttProvider = "assemblyai" | "whisper";
 
 export type SttTranscribeInput = {
-  audio: Buffer;
+  /** Raw audio bytes (Node Buffer or browser ArrayBuffer/Uint8Array). */
+  audio: ArrayBuffer | Uint8Array;
   mimeType: string;
   language?: string;
 };

@@ -72,7 +72,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = new Uint8Array(await file.arrayBuffer());
     const started = await adapter.startJob({
       audio: buffer,
       mimeType: file.type || "audio/wav",

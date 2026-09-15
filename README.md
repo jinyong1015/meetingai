@@ -10,21 +10,23 @@
 STT와 LLM을 각각 로컬·클라우드 중 선택해 사용합니다.
 
 ```text
-MeetingAI
-├── STT (음성 → 텍스트)  … 녹음 종료 · AI 동의 후 처리 (Realtime 미사용)
-│   ├── Whisper      … 로컬 faster-whisper (`whisper-server` · :8080 · OpenAI API 미사용)
-│   └── AssemblyAI   … 클라우드 Pre-recorded (선택 · 화자 구분 · 작업 재조회)
+MeetingAI (Vercel 또는 localhost)
+├── STT (음성 → 텍스트)
+│   ├── Whisper      … 브라우저 → 사용자 PC의 faster-whisper (:8080)
+│   └── AssemblyAI   … 브라우저 → Vercel API → AssemblyAI (키는 서버만)
 └── LLM (요약 · 상세 회의록)
-    ├── Ollama       … 로컬 (`OLLAMA_BASE_URL` · 기본 :11434)
-    └── OpenAI       … 클라우드 (`OPENAI_API_KEY`)
+    ├── Ollama       … 브라우저 → 사용자 PC의 Ollama (:11434)
+    └── OpenAI       … 브라우저 → Vercel API → OpenAI (키는 서버만)
 ```
 
 | 구분 | 옵션 | 처리 위치 | 현재 |
 |---|---|---|---|
-| **STT** | Whisper / AssemblyAI | **로컬 faster-whisper** / 클라우드 | **구현** (구간 시점 · 화자 · AI-05 재조회) |
-| **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **구현** (설정 프롬프트 · 요약·상세 · 개별 재생성) |
+| **STT** | Whisper / AssemblyAI | **브라우저→로컬** / 서버→클라우드 | **구현** |
+| **LLM** | Ollama / OpenAI | **브라우저→로컬** / 서버→클라우드 | **구현** |
 
-설정(SCR-05)에서 STT·LLM·일반·프롬프트를 고를 수 있습니다. 기본값은 **Whisper(로컬)** + **Ollama(로컬)** 입니다.
+설정(SCR-05)에서 STT·LLM·로컬 URL·모델을 고를 수 있습니다. 기본값은 **Whisper(로컬)** + **Ollama(로컬)** 입니다.
+
+> Vercel에 배포해도 로컬 Whisper/Ollama는 **사용자 PC에서 실행**해야 하며, 앱이 브라우저에서 `127.0.0.1`로 직접 호출합니다. Vercel 서버가 localhost를 호출하지 않습니다.
 
 ---
 
@@ -35,7 +37,8 @@ MeetingAI
 | 회의·메모·음성·전사·AI 결과·설정 | **브라우저 IndexedDB** (`meetingai`) | 프로젝트 폴더 파일이 아님. 동일 Chrome·`localhost:3000`에서만 유지 |
 | Whisper 모델 가중치 | `whisper-server/models/` | PC 디스크. 회의 본문은 여기에 안 남음 |
 | 전사 중 임시 오디오 | OS 임시 폴더 | Whisper 처리 후 삭제 |
-| 비밀키·엔진 URL | `.env.local` (서버 전용) | 브라우저에 노출하지 않음 |
+| 비밀키 | `.env.local` / Vercel Env (서버 전용) | OpenAI·AssemblyAI 키. 브라우저에 노출하지 않음 |
+| 로컬 엔진 URL·모델 | IndexedDB 설정 (+ env 시드) | Whisper/Ollama 주소는 사용자 PC 기준 |
 
 DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `notes` / `audioChunks` / `meetingAudio` / `transcripts` / `generations` / `settings` 를 확인할 수 있습니다.
 
@@ -215,30 +218,46 @@ npm run dev
 [Ollama](https://ollama.com) 설치 후 모델을 받아 두세요.
 
 ```powershell
+# 로컬 개발 Origin 허용 (필수: 브라우저 직접 호출)
+$env:OLLAMA_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
 ollama serve
-ollama pull gemma4:26b
+ollama pull qwen3:8b
 ```
 
-브라우저에서 `http://localhost:3000` 접속 → **설정**에서  
-STT = Whisper, LLM = Ollama 확인 → 녹음 종료 → AI 동의 → **AI 회의록 생성**
+브라우저에서 `http://localhost:3000` 접속 → **설정 → AI 엔진**에서  
+STT = Whisper, LLM = Ollama, URL 확인 → **로컬 엔진 연결 테스트** → 저장
 
-### 환경변수 (`.env.local`)
+### 환경변수 (`.env.local` / Vercel)
 
 | 변수 | 설명 |
 |---|---|
 | `STT_PROVIDER` | `whisper` (기본) 또는 `assemblyai` |
-| `WHISPER_API_URL` | `http://127.0.0.1:8080/v1/audio/transcriptions` |
+| `WHISPER_API_URL` | 브라우저 설정 시드 · `http://127.0.0.1:8080/v1/audio/transcriptions` |
 | `WHISPER_MODEL` | 로컬 모델 크기 (`small` 권장) |
-| `WHISPER_API_KEY` | 로컬 서버는 불필요 |
-| `ASSEMBLYAI_API_KEY` | AssemblyAI 사용 시에만 |
+| `ASSEMBLYAI_API_KEY` | **서버 전용** · AssemblyAI 사용 시 |
 | `LLM_PROVIDER` | `ollama` (기본) 또는 `openai` — 설정 UI 선택값이 우선 |
-| `OPENAI_API_KEY` | OpenAI 사용 시 |
+| `OPENAI_API_KEY` | **서버 전용** · OpenAI 사용 시 |
 | `OPENAI_MODEL` | 기본 `gpt-4.1-mini-2025-04-14` |
-| `OLLAMA_BASE_URL` | 기본 `http://127.0.0.1:11434` |
-| `OLLAMA_MODEL` | `ollama list`에 나온 이름 (예: `gemma4:26b`) |
+| `OLLAMA_BASE_URL` | 브라우저 시드 · `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL` | 예: `qwen3:8b` |
+| `MAKE_WEBHOOK_URL` | Make 웹훅 (선택) |
 
-> `NEXT_PUBLIC_` 접두사로 API 키를 두지 마세요. 브라우저에 노출됩니다.  
-> `.env.local`을 바꾼 뒤에는 **개발 서버를 재시작**해야 키가 반영됩니다.
+> API 키에 `NEXT_PUBLIC_`를 붙이지 마세요.  
+> 로컬 URL/모델은 비밀이 아니며 `/api/local-engines/defaults`로 시드됩니다.
+
+### Vercel 배포 후 로컬 엔진 연결
+
+1. Vercel Environment Variables에 **클라우드 키만** 넣습니다: `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY` (및 선택적 URL 시드).
+2. 사용자 PC에서 Whisper 서버를 켭니다 (`WHISPER_CORS_ORIGINS=*` 또는 배포 Origin).
+3. 사용자 PC에서 Ollama를 켭니다:
+   ```powershell
+   $env:OLLAMA_ORIGINS="https://your-app.vercel.app"
+   ollama serve
+   ```
+4. 배포된 사이트 → **설정 → AI 엔진**에서 Whisper/Ollama URL 확인 → **연결 테스트** → 저장.
+5. Chrome/Edge는 보통 `https` → `http://127.0.0.1` 루프백을 허용합니다. Safari 등에서 막히면 로컬 엔진을 mkcert HTTPS로 띄우세요.
+
+가능한 조합: AssemblyAI+OpenAI, AssemblyAI+Ollama, Whisper+OpenAI, Whisper+Ollama.
 
 ---
 

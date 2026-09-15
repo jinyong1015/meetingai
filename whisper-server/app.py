@@ -16,8 +16,12 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 HOST = os.getenv("WHISPER_HOST", "127.0.0.1")
 PORT = int(os.getenv("WHISPER_PORT", "8080"))
@@ -27,6 +31,13 @@ COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 DOWNLOAD_ROOT = os.getenv(
     "WHISPER_DOWNLOAD_ROOT",
     str(Path(__file__).resolve().parent / "models"),
+)
+# Comma-separated origins, or * for any (needed for Vercel → localhost browser calls)
+CORS_ORIGINS_RAW = os.getenv("WHISPER_CORS_ORIGINS", "*").strip()
+CORS_ORIGINS = (
+    ["*"]
+    if CORS_ORIGINS_RAW == "*"
+    else [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
 )
 
 _model: WhisperModel | None = None
@@ -64,11 +75,58 @@ async def lifespan(_app: FastAPI):
         download_root=DOWNLOAD_ROOT,
     )
     print("[whisper-server] ready")
+    print(f"[whisper-server] CORS origins={CORS_ORIGINS}")
     yield
     _model = None
 
 
 app = FastAPI(title="MeetingAI Local Whisper", lifespan=lifespan)
+
+
+class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
+    """Allow HTTPS public sites (e.g. Vercel) to call loopback (Chrome PNA)."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.method == "OPTIONS" and request.headers.get(
+            "access-control-request-private-network"
+        ):
+            origin = request.headers.get("origin", "*")
+            allow_origin = (
+                "*"
+                if "*" in CORS_ORIGINS
+                else (
+                    origin
+                    if origin in CORS_ORIGINS
+                    else (CORS_ORIGINS[0] if CORS_ORIGINS else "*")
+                )
+            )
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": allow_origin,
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": request.headers.get(
+                        "access-control-request-headers",
+                        "*",
+                    ),
+                    "Access-Control-Allow-Private-Network": "true",
+                    "Access-Control-Max-Age": "86400",
+                },
+            )
+
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+
+app.add_middleware(PrivateNetworkAccessMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

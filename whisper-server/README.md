@@ -48,7 +48,9 @@ python app.py
 
 ## Next.js 연동
 
-프로젝트 루트 `.env.local`:
+앱은 **브라우저가 이 PC의 Whisper로 직접** 호출합니다 (Vercel 서버 → localhost 아님).
+
+프로젝트 루트 `.env.local` (설정 UI 시드용):
 
 ```env
 STT_PROVIDER=whisper
@@ -56,12 +58,18 @@ WHISPER_API_URL=http://127.0.0.1:8080/v1/audio/transcriptions
 WHISPER_MODEL=small
 ```
 
-1. Whisper 서버를 먼저 띄운다 (`.\start.ps1`)
-2. Next 앱을 재시작한다 (`npm run dev` — 직접 실행)
-3. 앱 **설정**에서 STT = **Whisper** 저장
-4. 녹음 종료 → AI 동의 → **AI 회의록 생성**
+CORS (Vercel HTTPS에서 호출할 때):
 
-흐름: 브라우저 → Next `/api/stt/transcribe` → 로컬 `127.0.0.1:8080` (외부 OpenAI 호출 없음)
+```powershell
+$env:WHISPER_CORS_ORIGINS="*"   # 또는 https://your-app.vercel.app
+.\start.ps1
+```
+
+1. Whisper 서버를 먼저 띄운다
+2. Next 앱 / Vercel 사이트에서 **설정 → AI 엔진 → Whisper** URL 확인 → 연결 테스트
+3. 녹음 종료 → AI 동의 → **AI 회의록 생성**
+
+흐름: 브라우저 → `http://127.0.0.1:8080/v1/audio/transcriptions` (OpenAI 미사용)
 
 ## 모델 크기
 

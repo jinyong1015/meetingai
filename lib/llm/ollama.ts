@@ -11,18 +11,24 @@ import type {
   LlmSummaryResult,
 } from "@/lib/llm/types";
 import { formatDetailMinutesText } from "@/lib/types/detail";
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL,
+} from "@/lib/types/settings";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
-const DEFAULT_MODEL = "llama3.1";
+export type OllamaClientConfig = {
+  baseUrl: string;
+  model: string;
+};
 
 export function getOllamaBaseUrl(): string {
   const raw = process.env.OLLAMA_BASE_URL?.trim();
-  if (!raw) return DEFAULT_BASE_URL;
+  if (!raw) return DEFAULT_OLLAMA_BASE_URL;
   return raw.replace(/\/$/, "");
 }
 
 export function getOllamaModel(): string {
-  return process.env.OLLAMA_MODEL?.trim() || DEFAULT_MODEL;
+  return process.env.OLLAMA_MODEL?.trim() || DEFAULT_OLLAMA_MODEL;
 }
 
 /** True when a base URL is available (default localhost is fine). */
@@ -36,11 +42,15 @@ export type OllamaProbeResult = {
   models?: string[];
 };
 
+/** Browser or server: probe Ollama /api/tags. */
 export async function probeOllama(
+  config?: Partial<OllamaClientConfig>,
   timeoutMs = 3000,
 ): Promise<OllamaProbeResult> {
-  const baseUrl = getOllamaBaseUrl();
-  const model = getOllamaModel();
+  const baseUrl = (
+    config?.baseUrl?.trim() || getOllamaBaseUrl()
+  ).replace(/\/$/, "");
+  const model = config?.model?.trim() || getOllamaModel();
   try {
     const res = await fetch(`${baseUrl}/api/tags`, {
       method: "GET",
@@ -78,14 +88,15 @@ export async function probeOllama(
     }
     return {
       reachable: true,
-      detail: `로컬 사용 가능 · 모델 ${model}`,
+      detail: `브라우저에서 사용 가능 · 모델 ${model}`,
       models,
     };
   } catch {
     return {
       reachable: false,
       detail:
-        `연결 실패 · Ollama 미실행. https://ollama.com/download 에서 설치 후 실행하고, \`ollama pull ${model}\` 로 모델을 받은 뒤 다시 열어 주세요`,
+        `연결 실패 · Ollama 미실행이거나 CORS(OLLAMA_ORIGINS)가 이 사이트 Origin을 허용하지 않습니다. ` +
+        `https://ollama.com/download 설치 후 \`OLLAMA_ORIGINS\`에 앱 Origin을 넣고 \`ollama pull ${model}\` 하세요.`,
     };
   }
 }
@@ -97,12 +108,15 @@ type OllamaChatResponse = {
   error?: string;
 };
 
-async function createStructuredChat(params: {
-  messages: ChatMessage[];
-  schema: Record<string, unknown>;
-}): Promise<string> {
-  const baseUrl = getOllamaBaseUrl();
-  const model = getOllamaModel();
+async function createStructuredChat(
+  params: {
+    messages: ChatMessage[];
+    schema: Record<string, unknown>;
+  },
+  config: OllamaClientConfig,
+): Promise<string> {
+  const baseUrl = config.baseUrl.replace(/\/$/, "");
+  const model = config.model.trim() || DEFAULT_OLLAMA_MODEL;
 
   let res: Response;
   try {
@@ -122,7 +136,8 @@ async function createStructuredChat(params: {
     });
   } catch {
     throw new Error(
-      `Ollama에 연결하지 못했습니다. '${baseUrl}'에서 Ollama가 실행 중인지 확인하세요.`,
+      `Ollama에 연결하지 못했습니다. '${baseUrl}'에서 Ollama가 실행 중인지, ` +
+        `OLLAMA_ORIGINS에 이 앱 Origin이 포함되는지 확인하세요.`,
     );
   }
 
@@ -153,41 +168,72 @@ async function createStructuredChat(params: {
   return text;
 }
 
+/** Browser-direct Ollama generation. */
+export async function generateSummaryWithOllama(
+  input: LlmGenerateInput,
+  config: OllamaClientConfig,
+): Promise<LlmSummaryResult> {
+  const raw = await createStructuredChat(
+    {
+      messages: buildSummaryMessages(input),
+      schema: SUMMARY_JSON_SCHEMA as unknown as Record<string, unknown>,
+    },
+    config,
+  );
+  const parsed = parseJsonObject(raw) as { summaryText?: unknown };
+  const summaryText = asString(parsed.summaryText).trim();
+  if (!summaryText) {
+    throw new Error("요약 본문이 비어 있습니다.");
+  }
+  return {
+    summaryText,
+    provider: "ollama",
+    model: config.model,
+  };
+}
+
+export async function generateDetailWithOllama(
+  input: LlmGenerateInput,
+  config: OllamaClientConfig,
+): Promise<LlmDetailResult> {
+  const raw = await createStructuredChat(
+    {
+      messages: buildDetailMessages(input),
+      schema: DETAIL_JSON_SCHEMA as unknown as Record<string, unknown>,
+    },
+    config,
+  );
+  const detailMinutes = normalizeDetail(parseJsonObject(raw));
+  const detailText = formatDetailMinutesText(detailMinutes);
+  if (!detailText.trim()) {
+    throw new Error("상세 회의록 본문이 비어 있습니다.");
+  }
+  return {
+    detailMinutes,
+    detailText,
+    provider: "ollama",
+    model: config.model,
+  };
+}
+
+/**
+ * Server-side adapter. Prefer browser-direct helpers for local Ollama in the UI.
+ */
 export class OllamaLlmAdapter implements LlmAdapter {
   readonly provider = "ollama" as const;
 
-  async generateSummary(input: LlmGenerateInput): Promise<LlmSummaryResult> {
-    const raw = await createStructuredChat({
-      messages: buildSummaryMessages(input),
-      schema: SUMMARY_JSON_SCHEMA as unknown as Record<string, unknown>,
-    });
-    const parsed = parseJsonObject(raw) as { summaryText?: unknown };
-    const summaryText = asString(parsed.summaryText).trim();
-    if (!summaryText) {
-      throw new Error("요약 본문이 비어 있습니다.");
-    }
+  private config(): OllamaClientConfig {
     return {
-      summaryText,
-      provider: this.provider,
+      baseUrl: getOllamaBaseUrl(),
       model: getOllamaModel(),
     };
   }
 
+  async generateSummary(input: LlmGenerateInput): Promise<LlmSummaryResult> {
+    return generateSummaryWithOllama(input, this.config());
+  }
+
   async generateDetail(input: LlmGenerateInput): Promise<LlmDetailResult> {
-    const raw = await createStructuredChat({
-      messages: buildDetailMessages(input),
-      schema: DETAIL_JSON_SCHEMA as unknown as Record<string, unknown>,
-    });
-    const detailMinutes = normalizeDetail(parseJsonObject(raw));
-    const detailText = formatDetailMinutesText(detailMinutes);
-    if (!detailText.trim()) {
-      throw new Error("상세 회의록 본문이 비어 있습니다.");
-    }
-    return {
-      detailMinutes,
-      detailText,
-      provider: this.provider,
-      model: getOllamaModel(),
-    };
+    return generateDetailWithOllama(input, this.config());
   }
 }

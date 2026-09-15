@@ -52,7 +52,14 @@ import {
   deleteGenerationVersionsByMeeting,
 } from "@/lib/storage/versions";
 import { mapSttSegmentsToTranscript } from "@/lib/stt/mapSegments";
+import { transcribeWithWhisper } from "@/lib/stt/whisper";
 import type { SttSegmentResult } from "@/lib/stt/types";
+import {
+  generateDetailWithOllama,
+  generateSummaryWithOllama,
+  probeOllama,
+} from "@/lib/llm/ollama";
+import type { LlmGenerateInput } from "@/lib/llm/types";
 import type { MeetingAudio } from "@/lib/types/audio";
 import type { MeetingDetailMinutes } from "@/lib/types/detail";
 import { formatDetailMinutesText } from "@/lib/types/detail";
@@ -168,6 +175,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const {
     sttProvider,
     llmProvider,
+    whisperApiUrl,
+    whisperModel,
+    ollamaBaseUrl,
+    ollamaModel,
     askAiAfterRecording,
     summaryPrompt,
     detailPrompt,
@@ -180,6 +191,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     detailPrompt,
     summaryPromptVersion,
     detailPromptVersion,
+    whisperApiUrl,
+    whisperModel,
+    ollamaBaseUrl,
+    ollamaModel,
   });
   settingsRef.current = {
     askAiAfterRecording,
@@ -187,6 +202,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     detailPrompt,
     summaryPromptVersion,
     detailPromptVersion,
+    whisperApiUrl,
+    whisperModel,
+    ollamaBaseUrl,
+    ollamaModel,
   };
   processingStepsRef.current = processingSteps;
   reviewSegmentsRef.current = reviewSegments;
@@ -279,6 +298,14 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     let cancelled = false;
     async function loadLlmStatus() {
       try {
+        if (llmProvider === "ollama") {
+          const probe = await probeOllama({
+            baseUrl: ollamaBaseUrl,
+            model: ollamaModel,
+          });
+          if (!cancelled) setLlmConfigured(probe.reachable);
+          return;
+        }
         const res = await fetch("/api/llm/status", { cache: "no-store" });
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as {
@@ -287,7 +314,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             ollama?: { configured?: boolean };
           };
         };
-        const engine = data.engines?.[llmProvider];
+        const engine = data.engines?.openai;
         setLlmConfigured(Boolean(engine?.configured));
       } catch {
         if (!cancelled) setLlmConfigured(false);
@@ -297,7 +324,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [llmProvider]);
+  }, [llmProvider, ollamaBaseUrl, ollamaModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -587,7 +614,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     kind: "summary" | "detail" | "both" = "both",
   ) {
     if (!llmConfigured) {
-      const message = `${llmProviderLabel(llmProvider)}에 연결할 수 없어 요약·상세를 생성하지 않았습니다. 설정과 .env.local을 확인한 뒤 개발 서버를 다시 시작하세요.`;
+      const message =
+        llmProvider === "ollama"
+          ? `로컬 Ollama(${ollamaBaseUrl})에 연결할 수 없어 요약·상세를 생성하지 않았습니다. Ollama 실행과 OLLAMA_ORIGINS 설정을 확인하세요.`
+          : `${llmProviderLabel(llmProvider)}에 연결할 수 없어 요약·상세를 생성하지 않았습니다. Vercel/서버의 OPENAI_API_KEY를 확인하세요.`;
       setLlmError(message);
       if (kind === "summary" || kind === "both") {
         finishStep("generate_summary", "failed", undefined, message);
@@ -627,47 +657,96 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         }));
 
       const prompts = settingsRef.current;
-      const res = await fetch("/api/generations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          kind,
-          provider: llmProvider,
-          meeting: {
-            title: titleRef.current,
-            startedAt: meeting?.startedAt ?? "",
-            attendees: meeting?.attendees ?? "",
-            tags: meeting?.tags ?? [],
-          },
-          transcript: transcriptText,
-          notes: aiNotes,
-          summaryPrompt: prompts.summaryPrompt,
-          detailPrompt: prompts.detailPrompt,
-          summaryPromptVersion: prompts.summaryPromptVersion,
-          detailPromptVersion: prompts.detailPromptVersion,
-        }),
-      });
-
-      const data = (await res.json()) as {
-        summaryText?: string;
-        detailText?: string;
-        detailMinutes?: MeetingDetailMinutes;
-        model?: string;
-        provider?: string;
-        errors?: { summary?: string; detail?: string };
-        error?: string;
+      const input: LlmGenerateInput = {
+        meeting: {
+          title: titleRef.current,
+          startedAt: meeting?.startedAt ?? "",
+          attendees: meeting?.attendees ?? "",
+          tags: meeting?.tags ?? [],
+        },
+        transcript: transcriptText,
+        notes: aiNotes,
+        summaryPrompt: prompts.summaryPrompt,
+        detailPrompt: prompts.detailPrompt,
       };
 
-      if (!res.ok && !data.summaryText && !data.detailText) {
-        throw new Error(data.error || "회의록 생성에 실패했습니다.");
+      let summary: string | null = null;
+      let detailBody: string | null = null;
+      let detail: MeetingDetailMinutes | null = null;
+      let model: string | undefined;
+      const errors: { summary?: string; detail?: string } = {};
+
+      if (llmProvider === "ollama") {
+        const ollamaConfig = {
+          baseUrl: prompts.ollamaBaseUrl,
+          model: prompts.ollamaModel,
+        };
+        if (runSummary) {
+          try {
+            const result = await generateSummaryWithOllama(input, ollamaConfig);
+            summary = result.summaryText.trim() || null;
+            model = result.model;
+          } catch (err) {
+            errors.summary =
+              err instanceof Error ? err.message : "요약 생성에 실패했습니다.";
+          }
+        }
+        if (runDetail) {
+          try {
+            const result = await generateDetailWithOllama(input, ollamaConfig);
+            detail = result.detailMinutes;
+            detailBody = result.detailText.trim() || null;
+            model = result.model;
+          } catch (err) {
+            errors.detail =
+              err instanceof Error
+                ? err.message
+                : "상세 회의록 생성에 실패했습니다.";
+          }
+        }
+      } else {
+        const res = await fetch("/api/generations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind,
+            provider: "openai",
+            meeting: input.meeting,
+            transcript: transcriptText,
+            notes: aiNotes,
+            summaryPrompt: prompts.summaryPrompt,
+            detailPrompt: prompts.detailPrompt,
+            summaryPromptVersion: prompts.summaryPromptVersion,
+            detailPromptVersion: prompts.detailPromptVersion,
+          }),
+        });
+
+        const data = (await res.json()) as {
+          summaryText?: string;
+          detailText?: string;
+          detailMinutes?: MeetingDetailMinutes;
+          model?: string;
+          errors?: { summary?: string; detail?: string };
+          error?: string;
+        };
+
+        if (!res.ok && !data.summaryText && !data.detailText) {
+          throw new Error(data.error || "회의록 생성에 실패했습니다.");
+        }
+
+        summary = data.summaryText?.trim() || null;
+        detailBody = data.detailText?.trim() || null;
+        detail = data.detailMinutes ?? null;
+        model = data.model;
+        if (data.errors?.summary) errors.summary = data.errors.summary;
+        if (data.errors?.detail) errors.detail = data.errors.detail;
+        if (!summary && data.error && runSummary) errors.summary = data.error;
+        if (!detailBody && data.error && runDetail) errors.detail = data.error;
       }
 
-      const summary = data.summaryText?.trim() || null;
-      const detailBody = data.detailText?.trim() || null;
-      const detail = data.detailMinutes ?? null;
       const engineLabel = llmProviderLabel(llmProvider);
-      const sourceLabel = data.model
-        ? `${engineLabel} · ${data.model}`
+      const sourceLabel = model
+        ? `${engineLabel} · ${model}`
         : engineLabel;
 
       if (runSummary) {
@@ -677,11 +756,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           finishStep(
             "generate_summary",
             "success",
-            data.model ? data.model : engineLabel,
+            model ? model : engineLabel,
           );
         } else {
-          const err =
-            data.errors?.summary || data.error || "요약 생성에 실패했습니다.";
+          const err = errors.summary || "요약 생성에 실패했습니다.";
           finishStep("generate_summary", "failed", undefined, err);
           setLlmError(err);
         }
@@ -695,13 +773,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           finishStep(
             "generate_minutes",
             "success",
-            data.model ? data.model : engineLabel,
+            model ? model : engineLabel,
           );
         } else {
-          const err =
-            data.errors?.detail ||
-            data.error ||
-            "상세 회의록 생성에 실패했습니다.";
+          const err = errors.detail || "상세 회의록 생성에 실패했습니다.";
           finishStep("generate_minutes", "failed", undefined, err);
           setLlmError((prev) => (prev ? `${prev} · ${err}` : err));
         }
@@ -723,7 +798,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           inputFingerprint: fingerprint,
           source: "llm",
           llmProvider,
-          model: data.model,
+          model,
           preserveAsAiOriginal: true,
         });
         await createGenerationVersion({
@@ -913,41 +988,31 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         return;
       }
 
-      const form = new FormData();
-      const filename = `meeting.${extensionForMime(audio.mimeType)}`;
-      form.append("audio", audio.blob, filename);
-      form.append("language", "ko");
-      form.append("provider", sttProvider);
+      // Local Whisper: browser → user's PC (never via Vercel localhost proxy)
+      const localSettings = settingsRef.current;
+      const audioBuffer = await audio.blob.arrayBuffer();
+      const whisperResult = await transcribeWithWhisper(
+        {
+          audio: audioBuffer,
+          mimeType: audio.mimeType || "audio/webm",
+          language: "ko",
+        },
+        {
+          endpoint: localSettings.whisperApiUrl,
+          model: localSettings.whisperModel,
+        },
+      );
 
-      const res = await fetch("/api/stt/transcribe", {
-        method: "POST",
-        body: form,
-      });
-      const data = (await res.json()) as {
-        text?: string;
-        provider?: string;
-        model?: string;
-        segments?: SttSegmentResult[];
-        diarizationSupported?: boolean;
-        remoteJobId?: string | null;
-        error?: string;
-      };
-
-      if (!res.ok) {
-        throw new Error(data.error || "음성 인식에 실패했습니다.");
-      }
-
-      const provider = data.provider ?? sttProvider;
       const segments = mapSttSegmentsToTranscript(
         meetingId,
-        provider,
-        data.segments?.length
-          ? data.segments
-          : data.text?.trim()
+        "whisper",
+        whisperResult.segments?.length
+          ? whisperResult.segments
+          : whisperResult.text?.trim()
             ? [
                 {
                   id: `${meetingId}-full`,
-                  text: data.text.trim(),
+                  text: whisperResult.text.trim(),
                   startedAtSec: 0,
                   speakerLabel: "화자 A",
                   originalSpeakerLabel: "A",
@@ -957,23 +1022,21 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       );
 
       setReviewSegments(segments);
-      setDiarizationSupported(Boolean(data.diarizationSupported));
+      setDiarizationSupported(false);
       await saveMeetingTranscript({
         meetingId,
         segments,
-        provider,
-        model: data.model,
-        diarizationSupported: Boolean(data.diarizationSupported),
-        remoteJobId: data.remoteJobId ?? null,
+        provider: "whisper",
+        model: whisperResult.model,
+        diarizationSupported: false,
+        remoteJobId: null,
         status: "completed",
       });
 
       finishStep(
         "transcribe",
         "success",
-        data.diarizationSupported
-          ? `${segments.length}개 구간 · 화자 구분`
-          : `${segments.length}개 구간`,
+        `${segments.length}개 구간 · 로컬 Whisper`,
       );
       setSttPending(false);
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSttProvider } from "@/lib/stt";
+import { getLocalEngineDefaultsFromEnv } from "@/lib/localEngines/defaults";
 
 export const runtime = "nodejs";
 
@@ -7,6 +8,7 @@ type EngineStatus = {
   configured: boolean;
   label: string;
   detail: string;
+  mode?: "server" | "browser";
 };
 
 function assemblyStatus(): EngineStatus {
@@ -14,75 +16,32 @@ function assemblyStatus(): EngineStatus {
   return {
     configured,
     label: "AssemblyAI",
+    mode: "server",
     detail: configured
       ? "설정됨 · 서버 환경변수 확인됨"
       : "미설정 · ASSEMBLYAI_API_KEY 필요",
   };
 }
 
-async function whisperStatus(): Promise<EngineStatus> {
-  const endpoint = process.env.WHISPER_API_URL?.trim();
-  if (!endpoint) {
-    return {
-      configured: false,
-      label: "Whisper",
-      detail: "미설정 · WHISPER_API_URL 필요",
-    };
-  }
-
-  try {
-    const healthUrl = endpoint.replace(
-      /\/v1\/audio\/transcriptions\/?$/i,
-      "/health",
-    );
-    const res = await fetch(healthUrl, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(2500),
-    });
-    if (!res.ok) {
-      return {
-        configured: true,
-        label: "Whisper",
-        detail: `URL 설정됨 · 서버 응답 ${res.status}`,
-      };
-    }
-    const data = (await res.json().catch(() => null)) as {
-      ok?: boolean;
-      model?: string;
-    } | null;
-    if (data?.ok) {
-      return {
-        configured: true,
-        label: "Whisper",
-        detail: data.model
-          ? `연결됨 · 모델 ${data.model}`
-          : "연결됨 · /health OK",
-      };
-    }
-    return {
-      configured: true,
-      label: "Whisper",
-      detail: "URL 설정됨 · health 응답 확인 필요",
-    };
-  } catch {
-    return {
-      configured: true,
-      label: "Whisper",
-      detail: "URL 설정됨 · 서버 미실행 또는 연결 실패",
-    };
-  }
+function whisperStatus(): EngineStatus {
+  const defaults = getLocalEngineDefaultsFromEnv();
+  return {
+    configured: true,
+    label: "Whisper",
+    mode: "browser",
+    detail:
+      `브라우저에서 사용자 PC의 로컬 Whisper를 호출합니다 · 기본 ${defaults.whisperApiUrl}. ` +
+      `설정 화면에서 URL을 확인하고 연결 테스트를 실행하세요.`,
+  };
 }
 
 export async function GET() {
-  const [assemblyai, whisper] = await Promise.all([
-    Promise.resolve(assemblyStatus()),
-    whisperStatus(),
-  ]);
   return NextResponse.json({
     defaultProvider: getSttProvider(),
     engines: {
-      assemblyai,
-      whisper,
+      assemblyai: assemblyStatus(),
+      whisper: whisperStatus(),
     },
+    defaults: getLocalEngineDefaultsFromEnv(),
   });
 }

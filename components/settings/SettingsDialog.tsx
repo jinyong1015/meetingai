@@ -8,6 +8,12 @@ import {
   SAMPLE_TRIAL_TRANSCRIPT,
 } from "@/lib/mocks/sampleTrial";
 import {
+  generateDetailWithOllama,
+  generateSummaryWithOllama,
+  probeOllama,
+} from "@/lib/llm/ollama";
+import { probeWhisper } from "@/lib/stt/whisper";
+import {
   exportMeetingBackup,
   getStorageEstimate,
   parseMeetingBackup,
@@ -35,6 +41,14 @@ type EngineStatus = {
   configured: boolean;
   label: string;
   detail: string;
+  mode?: "server" | "browser";
+};
+
+type LocalEngineDefaults = {
+  whisperApiUrl: string;
+  whisperModel: string;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
 };
 
 type SttStatusResponse = {
@@ -85,7 +99,7 @@ const STT_OPTIONS: Array<{
     value: "whisper",
     title: "Whisper (로컬)",
     description:
-      "이 PC의 faster-whisper 서버(127.0.0.1:8080)에서 전사 · OpenAI 미사용",
+      "브라우저가 이 PC의 faster-whisper 서버로 직접 전사합니다 (기본 127.0.0.1:8080)",
   },
 ];
 
@@ -98,18 +112,22 @@ const LLM_OPTIONS: Array<{
     value: "ollama",
     title: "Ollama (로컬)",
     description:
-      "이 PC의 Ollama(127.0.0.1:11434)에서 요약·상세 생성 · 외부 전송 없음",
+      "브라우저가 이 PC의 Ollama로 직접 요약·상세를 생성합니다 (기본 127.0.0.1:11434)",
   },
   {
     value: "openai",
     title: "OpenAI",
-    description: "클라우드 · 전사문·AI 반영 메모를 외부로 전송해 생성",
+    description: "클라우드 · 전사문·AI 반영 메모를 서버 API로 전송해 생성",
   },
 ];
 
 type DraftState = {
   sttProvider: SttProvider;
   llmProvider: LlmProvider;
+  whisperApiUrl: string;
+  whisperModel: string;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
   timezone: string;
   askAiAfterRecording: boolean;
   summaryPrompt: string;
@@ -122,6 +140,10 @@ function toDraft(settings: AppSettings): DraftState {
   return {
     sttProvider: settings.sttProvider,
     llmProvider: settings.llmProvider,
+    whisperApiUrl: settings.whisperApiUrl,
+    whisperModel: settings.whisperModel,
+    ollamaBaseUrl: settings.ollamaBaseUrl,
+    ollamaModel: settings.ollamaModel,
     timezone: settings.timezone,
     askAiAfterRecording: settings.askAiAfterRecording,
     summaryPrompt: settings.summaryPrompt,
@@ -135,6 +157,10 @@ function draftsEqual(a: DraftState, b: DraftState): boolean {
   return (
     a.sttProvider === b.sttProvider &&
     a.llmProvider === b.llmProvider &&
+    a.whisperApiUrl === b.whisperApiUrl &&
+    a.whisperModel === b.whisperModel &&
+    a.ollamaBaseUrl === b.ollamaBaseUrl &&
+    a.ollamaModel === b.ollamaModel &&
     a.timezone === b.timezone &&
     a.askAiAfterRecording === b.askAiAfterRecording &&
     a.summaryPrompt === b.summaryPrompt &&
@@ -172,6 +198,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const [trialConfirmOpen, setTrialConfirmOpen] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
   const [trialResult, setTrialResult] = useState<string | null>(null);
+  const [probeBusy, setProbeBusy] = useState(false);
   const [storage, setStorage] = useState<{ usage: number; quota: number }>({
     usage: 0,
     quota: 0,
@@ -231,32 +258,107 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       setBackupMessage(null);
       setBackupError(null);
       try {
-        const [settings, sttRes, llmRes, estimate] = await Promise.all([
-          getAppSettings(),
-          fetch("/api/stt/status", { cache: "no-store" }),
-          fetch("/api/llm/status", { cache: "no-store" }),
-          getStorageEstimate(),
-        ]);
+        const [settings, sttRes, llmRes, defaultsRes, estimate] =
+          await Promise.all([
+            getAppSettings(),
+            fetch("/api/stt/status", { cache: "no-store" }),
+            fetch("/api/llm/status", { cache: "no-store" }),
+            fetch("/api/local-engines/defaults", { cache: "no-store" }),
+            getStorageEstimate(),
+          ]);
         if (cancelled) return;
 
-        const nextDraft = toDraft(settings);
+        let nextSettings = settings;
+        if (defaultsRes.ok) {
+          const defaults = (await defaultsRes.json()) as LocalEngineDefaults;
+          const needsSeed =
+            !settings.whisperApiUrl ||
+            settings.whisperApiUrl === DEFAULT_APP_SETTINGS.whisperApiUrl ||
+            !settings.ollamaBaseUrl ||
+            settings.ollamaBaseUrl === DEFAULT_APP_SETTINGS.ollamaBaseUrl;
+          // Only seed from env when still on stock defaults (first run / migration).
+          if (
+            needsSeed &&
+            (defaults.whisperApiUrl ||
+              defaults.ollamaBaseUrl ||
+              defaults.ollamaModel ||
+              defaults.whisperModel)
+          ) {
+            const seeded = await saveAppSettings({
+              whisperApiUrl:
+                settings.whisperApiUrl === DEFAULT_APP_SETTINGS.whisperApiUrl
+                  ? defaults.whisperApiUrl || settings.whisperApiUrl
+                  : settings.whisperApiUrl,
+              whisperModel:
+                settings.whisperModel === DEFAULT_APP_SETTINGS.whisperModel
+                  ? defaults.whisperModel || settings.whisperModel
+                  : settings.whisperModel,
+              ollamaBaseUrl:
+                settings.ollamaBaseUrl === DEFAULT_APP_SETTINGS.ollamaBaseUrl
+                  ? defaults.ollamaBaseUrl || settings.ollamaBaseUrl
+                  : settings.ollamaBaseUrl,
+              ollamaModel:
+                settings.ollamaModel === DEFAULT_APP_SETTINGS.ollamaModel
+                  ? defaults.ollamaModel || settings.ollamaModel
+                  : settings.ollamaModel,
+            });
+            nextSettings = seeded;
+          }
+        }
+
+        const nextDraft = toDraft(nextSettings);
         setBaseline(nextDraft);
         setDraft(nextDraft);
         setStorage(estimate);
 
+        let nextStt: SttStatusResponse["engines"] | null = null;
+        let nextLlm: LlmStatusResponse["engines"] | null = null;
+
         if (sttRes.ok) {
           const status = (await sttRes.json()) as SttStatusResponse;
-          setSttEngines(status.engines);
-        } else {
-          setSttEngines(null);
+          nextStt = status.engines;
         }
-
         if (llmRes.ok) {
           const status = (await llmRes.json()) as LlmStatusResponse;
-          setLlmEngines(status.engines);
-        } else {
-          setLlmEngines(null);
+          nextLlm = status.engines;
         }
+
+        // Browser probe for local engines (Vercel-safe)
+        const [whisperProbe, ollamaProbe] = await Promise.all([
+          probeWhisper(nextDraft.whisperApiUrl),
+          probeOllama({
+            baseUrl: nextDraft.ollamaBaseUrl,
+            model: nextDraft.ollamaModel,
+          }),
+        ]);
+        if (cancelled) return;
+
+        setSttEngines({
+          assemblyai: nextStt?.assemblyai ?? {
+            configured: false,
+            label: "AssemblyAI",
+            detail: "상태를 불러오지 못했습니다",
+          },
+          whisper: {
+            configured: whisperProbe.reachable,
+            label: "Whisper",
+            mode: "browser",
+            detail: whisperProbe.detail,
+          },
+        });
+        setLlmEngines({
+          openai: nextLlm?.openai ?? {
+            configured: false,
+            label: "OpenAI",
+            detail: "상태를 불러오지 못했습니다",
+          },
+          ollama: {
+            configured: ollamaProbe.reachable,
+            label: "Ollama",
+            mode: "browser",
+            detail: ollamaProbe.detail,
+          },
+        });
       } catch {
         if (!cancelled) setError("설정을 불러오지 못했습니다.");
       } finally {
@@ -292,23 +394,84 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     }
 
     const sttEngine = sttEngines?.[draft.sttProvider];
-    if (sttEngine && !sttEngine.configured) {
+    if (draft.sttProvider === "assemblyai" && sttEngine && !sttEngine.configured) {
       setTab("engines");
       setError(
-        `${sttProviderLabel(draft.sttProvider)}가 서버에 설정되지 않아 저장할 수 없습니다.`,
+        `${sttProviderLabel(draft.sttProvider)}가 서버에 설정되지 않아 저장할 수 없습니다. ASSEMBLYAI_API_KEY를 확인하세요.`,
       );
       setSaving(false);
       return;
     }
+    if (draft.sttProvider === "whisper") {
+      if (!draft.whisperApiUrl.trim()) {
+        setTab("engines");
+        setError("Whisper API URL을 입력하세요.");
+        setSaving(false);
+        return;
+      }
+      const whisperProbe = await probeWhisper(draft.whisperApiUrl);
+      if (!whisperProbe.reachable) {
+        setTab("engines");
+        setError(
+          `로컬 Whisper에 연결할 수 없습니다. ${whisperProbe.detail}`,
+        );
+        setSaving(false);
+        return;
+      }
+      setSttEngines((prev) =>
+        prev
+          ? {
+              ...prev,
+              whisper: {
+                configured: true,
+                label: "Whisper",
+                mode: "browser",
+                detail: whisperProbe.detail,
+              },
+            }
+          : prev,
+      );
+    }
 
     const llmEngine = llmEngines?.[draft.llmProvider];
-    if (llmEngine && !llmEngine.configured) {
+    if (draft.llmProvider === "openai" && llmEngine && !llmEngine.configured) {
       setTab("engines");
       setError(
-        `${llmProviderLabel(draft.llmProvider)}에 연결할 수 없어 저장할 수 없습니다.`,
+        `${llmProviderLabel(draft.llmProvider)}에 연결할 수 없어 저장할 수 없습니다. OPENAI_API_KEY를 확인하세요.`,
       );
       setSaving(false);
       return;
+    }
+    if (draft.llmProvider === "ollama") {
+      if (!draft.ollamaBaseUrl.trim() || !draft.ollamaModel.trim()) {
+        setTab("engines");
+        setError("Ollama 주소와 모델 이름을 입력하세요.");
+        setSaving(false);
+        return;
+      }
+      const ollamaProbe = await probeOllama({
+        baseUrl: draft.ollamaBaseUrl,
+        model: draft.ollamaModel,
+      });
+      if (!ollamaProbe.reachable) {
+        setTab("engines");
+        setError(`로컬 Ollama에 연결할 수 없습니다. ${ollamaProbe.detail}`);
+        setSaving(false);
+        return;
+      }
+      setLlmEngines((prev) =>
+        prev
+          ? {
+              ...prev,
+              ollama: {
+                configured: true,
+                label: "Ollama",
+                mode: "browser",
+                detail: ollamaProbe.detail,
+              },
+            }
+          : prev,
+      );
     }
 
     try {
@@ -324,6 +487,10 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       const saved = await saveAppSettings({
         sttProvider: draft.sttProvider,
         llmProvider: draft.llmProvider,
+        whisperApiUrl: draft.whisperApiUrl.trim(),
+        whisperModel: draft.whisperModel.trim() || DEFAULT_APP_SETTINGS.whisperModel,
+        ollamaBaseUrl: draft.ollamaBaseUrl.trim().replace(/\/$/, ""),
+        ollamaModel: draft.ollamaModel.trim(),
         timezone: draft.timezone,
         askAiAfterRecording: draft.askAiAfterRecording,
         theme: "default",
@@ -353,18 +520,97 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     setSavedHint(null);
   }
 
+  async function runLocalEngineProbe() {
+    setProbeBusy(true);
+    setError(null);
+    try {
+      const [whisperProbe, ollamaProbe] = await Promise.all([
+        probeWhisper(draft.whisperApiUrl),
+        probeOllama({
+          baseUrl: draft.ollamaBaseUrl,
+          model: draft.ollamaModel,
+        }),
+      ]);
+      setSttEngines((prev) => ({
+        assemblyai: prev?.assemblyai ?? {
+          configured: false,
+          label: "AssemblyAI",
+          detail: "서버 상태 미확인",
+        },
+        whisper: {
+          configured: whisperProbe.reachable,
+          label: "Whisper",
+          mode: "browser",
+          detail: whisperProbe.detail,
+        },
+      }));
+      setLlmEngines((prev) => ({
+        openai: prev?.openai ?? {
+          configured: false,
+          label: "OpenAI",
+          detail: "서버 상태 미확인",
+        },
+        ollama: {
+          configured: ollamaProbe.reachable,
+          label: "Ollama",
+          mode: "browser",
+          detail: ollamaProbe.detail,
+        },
+      }));
+      setSavedHint(
+        whisperProbe.reachable || ollamaProbe.reachable
+          ? "로컬 엔진 연결을 다시 확인했습니다."
+          : "로컬 엔진에 연결하지 못했습니다. CORS·Origin·실행 상태를 확인하세요.",
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "연결 테스트에 실패했습니다.",
+      );
+    } finally {
+      setProbeBusy(false);
+    }
+  }
+
   async function runTrialGeneration() {
     setTrialConfirmOpen(false);
     setTrialBusy(true);
     setTrialResult(null);
     setError(null);
     try {
+      const kind = promptFocus === "summary" ? "summary" : "detail";
+      if (draft.llmProvider === "ollama") {
+        const input = {
+          meeting: {
+            title: SAMPLE_TRIAL_MEETING.title,
+            startedAt: SAMPLE_TRIAL_MEETING.startedAt,
+            attendees: SAMPLE_TRIAL_MEETING.attendees,
+            tags: SAMPLE_TRIAL_MEETING.tags,
+          },
+          transcript: SAMPLE_TRIAL_TRANSCRIPT,
+          notes: SAMPLE_TRIAL_NOTES,
+          summaryPrompt: draft.summaryPrompt,
+          detailPrompt: draft.detailPrompt,
+        };
+        const config = {
+          baseUrl: draft.ollamaBaseUrl,
+          model: draft.ollamaModel,
+        };
+        if (kind === "summary") {
+          const result = await generateSummaryWithOllama(input, config);
+          setTrialResult(result.summaryText);
+        } else {
+          const result = await generateDetailWithOllama(input, config);
+          setTrialResult(result.detailText);
+        }
+        return;
+      }
+
       const res = await fetch("/api/generations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: promptFocus === "summary" ? "summary" : "detail",
-          provider: draft.llmProvider,
+          kind,
+          provider: "openai",
           meeting: SAMPLE_TRIAL_MEETING,
           transcript: SAMPLE_TRIAL_TRANSCRIPT,
           notes: SAMPLE_TRIAL_NOTES,
@@ -624,11 +870,52 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                   })}
                 </fieldset>
 
+                {draft.sttProvider === "whisper" && (
+                  <div className="mt-4 space-y-3 rounded-2xl bg-white/55 px-4 py-4 ring-1 ring-[var(--border)]">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                      로컬 Whisper 주소
+                    </p>
+                    <label className="block text-sm">
+                      <span className="text-[var(--muted)]">API URL</span>
+                      <input
+                        type="url"
+                        className="mt-1 w-full rounded-xl bg-white/80 px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+                        value={draft.whisperApiUrl}
+                        disabled={loading || saving}
+                        onChange={(event) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            whisperApiUrl: event.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_APP_SETTINGS.whisperApiUrl}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-[var(--muted)]">모델</span>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-xl bg-white/80 px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+                        value={draft.whisperModel}
+                        disabled={loading || saving}
+                        onChange={(event) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            whisperModel: event.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_APP_SETTINGS.whisperModel}
+                      />
+                    </label>
+                  </div>
+                )}
+
                 <h3 className="mt-8 text-base font-semibold">
                   LLM (요약 · 상세 회의록)
                 </h3>
                 <p className="mt-1 text-sm text-[var(--muted)]">
-                  전사 후 요약·상세 생성에 사용할 엔진을 선택합니다.
+                  전사 후 요약·상세 생성에 사용할 엔진을 선택합니다. 로컬
+                  Ollama는 브라우저가 사용자 PC로 직접 호출합니다.
                 </p>
 
                 <fieldset className="mt-4 space-y-2" disabled={loading || saving}>
@@ -681,6 +968,64 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                     );
                   })}
                 </fieldset>
+
+                {draft.llmProvider === "ollama" && (
+                  <div className="mt-4 space-y-3 rounded-2xl bg-white/55 px-4 py-4 ring-1 ring-[var(--border)]">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                      로컬 Ollama 주소
+                    </p>
+                    <label className="block text-sm">
+                      <span className="text-[var(--muted)]">Base URL</span>
+                      <input
+                        type="url"
+                        className="mt-1 w-full rounded-xl bg-white/80 px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+                        value={draft.ollamaBaseUrl}
+                        disabled={loading || saving}
+                        onChange={(event) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            ollamaBaseUrl: event.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_APP_SETTINGS.ollamaBaseUrl}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-[var(--muted)]">모델</span>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-xl bg-white/80 px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+                        value={draft.ollamaModel}
+                        disabled={loading || saving}
+                        onChange={(event) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            ollamaModel: event.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_APP_SETTINGS.ollamaModel}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-ghost px-3 py-1.5 text-sm"
+                    disabled={loading || saving || probeBusy}
+                    onClick={() => void runLocalEngineProbe()}
+                  >
+                    {probeBusy ? "연결 확인 중…" : "로컬 엔진 연결 테스트"}
+                  </button>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
+                  Vercel(HTTPS)에서 로컬 엔진을 쓰려면 Whisper에 CORS가 켜져
+                  있어야 하고, Ollama는{" "}
+                  <code className="rounded bg-black/5 px-1">OLLAMA_ORIGINS</code>
+                  에 이 사이트 Origin을 넣어야 합니다. Safari 등에서 차단되면
+                  로컬 엔진을 HTTPS(mkcert)로 띄우세요.
+                </p>
               </div>
             )}
 

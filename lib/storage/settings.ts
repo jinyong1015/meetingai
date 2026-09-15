@@ -20,6 +20,12 @@ function isTheme(value: unknown): value is AppTheme {
   return value === "default";
 }
 
+function normalizeUrl(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
+
 function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSettings {
   const browserTz =
     typeof Intl !== "undefined"
@@ -34,6 +40,22 @@ function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSet
     llmProvider: isLlmProvider(raw?.llmProvider)
       ? raw.llmProvider
       : DEFAULT_APP_SETTINGS.llmProvider,
+    whisperApiUrl: normalizeUrl(
+      raw?.whisperApiUrl,
+      DEFAULT_APP_SETTINGS.whisperApiUrl,
+    ),
+    whisperModel: normalizeUrl(
+      raw?.whisperModel,
+      DEFAULT_APP_SETTINGS.whisperModel,
+    ),
+    ollamaBaseUrl: normalizeUrl(
+      raw?.ollamaBaseUrl,
+      DEFAULT_APP_SETTINGS.ollamaBaseUrl,
+    ).replace(/\/$/, ""),
+    ollamaModel: normalizeUrl(
+      raw?.ollamaModel,
+      DEFAULT_APP_SETTINGS.ollamaModel,
+    ),
     timezone:
       typeof raw?.timezone === "string" && raw.timezone.trim()
         ? raw.timezone.trim()

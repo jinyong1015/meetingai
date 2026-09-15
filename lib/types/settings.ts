@@ -9,11 +9,23 @@ export type AppTheme = "default";
 
 export type PromptKind = "summary" | "detail";
 
+export const DEFAULT_WHISPER_API_URL =
+  "http://127.0.0.1:8080/v1/audio/transcriptions";
+export const DEFAULT_WHISPER_MODEL = "small";
+export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+export const DEFAULT_OLLAMA_MODEL = "qwen3:8b";
+
 export type AppSettings = {
   /** Singleton key for IndexedDB. */
   id: "app";
   sttProvider: SttProvider;
   llmProvider: LlmProvider;
+  /** Browser → local Whisper OpenAI-compatible transcription URL. */
+  whisperApiUrl: string;
+  whisperModel: string;
+  /** Browser → local Ollama base URL (no trailing slash). */
+  ollamaBaseUrl: string;
+  ollamaModel: string;
   /** IANA timezone, e.g. Asia/Seoul */
   timezone: string;
   /** After recording stop, show AI consent / generation prompt. */
@@ -34,6 +46,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: "app",
   sttProvider: "whisper",
   llmProvider: "ollama",
+  whisperApiUrl: DEFAULT_WHISPER_API_URL,
+  whisperModel: DEFAULT_WHISPER_MODEL,
+  ollamaBaseUrl: DEFAULT_OLLAMA_BASE_URL,
+  ollamaModel: DEFAULT_OLLAMA_MODEL,
   timezone:
     typeof Intl !== "undefined"
       ? Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Seoul"
