@@ -4,6 +4,7 @@ import { deleteMeetingGeneration } from "@/lib/storage/generations";
 import { deleteNotesByMeeting } from "@/lib/storage/notes";
 import { deleteMeetingTranscript } from "@/lib/storage/transcripts";
 import { deleteGenerationVersionsByMeeting } from "@/lib/storage/versions";
+import { deleteWebhookDeliveriesByMeeting } from "@/lib/storage/webhookDeliveries";
 import type { Meeting, MeetingDisplayStatus } from "@/lib/types/meeting";
 import { createId } from "@/lib/utils/format-time";
 
@@ -110,6 +111,7 @@ export async function deleteMeeting(id: string) {
     deleteMeetingTranscript(id),
     deleteMeetingGeneration(id),
     deleteGenerationVersionsByMeeting(id),
+    deleteWebhookDeliveriesByMeeting(id),
     deleteMeetingAudioData(id),
   ]);
   const db = await openDb();

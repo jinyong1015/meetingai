@@ -85,6 +85,39 @@ function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSet
       raw.detailPromptVersion >= 1
         ? Math.floor(raw.detailPromptVersion)
         : DEFAULT_APP_SETTINGS.detailPromptVersion,
+    webhookEnabled:
+      typeof raw?.webhookEnabled === "boolean"
+        ? raw.webhookEnabled
+        : DEFAULT_APP_SETTINGS.webhookEnabled,
+    webhookDestinationAlias:
+      typeof raw?.webhookDestinationAlias === "string" &&
+      raw.webhookDestinationAlias.trim()
+        ? raw.webhookDestinationAlias.trim()
+        : DEFAULT_APP_SETTINGS.webhookDestinationAlias,
+    webhookIncludeMeetingInfo:
+      typeof raw?.webhookIncludeMeetingInfo === "boolean"
+        ? raw.webhookIncludeMeetingInfo
+        : DEFAULT_APP_SETTINGS.webhookIncludeMeetingInfo,
+    webhookIncludeSummary:
+      typeof raw?.webhookIncludeSummary === "boolean"
+        ? raw.webhookIncludeSummary
+        : DEFAULT_APP_SETTINGS.webhookIncludeSummary,
+    webhookIncludeDetail:
+      typeof raw?.webhookIncludeDetail === "boolean"
+        ? raw.webhookIncludeDetail
+        : DEFAULT_APP_SETTINGS.webhookIncludeDetail,
+    webhookIncludeActionItems:
+      typeof raw?.webhookIncludeActionItems === "boolean"
+        ? raw.webhookIncludeActionItems
+        : DEFAULT_APP_SETTINGS.webhookIncludeActionItems,
+    webhookIncludeTranscript:
+      typeof raw?.webhookIncludeTranscript === "boolean"
+        ? raw.webhookIncludeTranscript
+        : DEFAULT_APP_SETTINGS.webhookIncludeTranscript,
+    webhookIncludeNotes:
+      typeof raw?.webhookIncludeNotes === "boolean"
+        ? raw.webhookIncludeNotes
+        : DEFAULT_APP_SETTINGS.webhookIncludeNotes,
     updatedAt:
       typeof raw?.updatedAt === "string"
         ? raw.updatedAt

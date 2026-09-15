@@ -1,5 +1,5 @@
 const DB_NAME = "meetingai";
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 export const NOTES_STORE = "notes";
 export const MEETINGS_STORE = "meetings";
@@ -9,6 +9,7 @@ export const GENERATIONS_STORE = "generations";
 export const AUDIO_CHUNKS_STORE = "audioChunks";
 export const MEETING_AUDIO_STORE = "meetingAudio";
 export const VERSIONS_STORE = "generationVersions";
+export const WEBHOOK_DELIVERIES_STORE = "webhookDeliveries";
 
 function ensureStores(db: IDBDatabase, oldVersion: number) {
   if (oldVersion < 1 && !db.objectStoreNames.contains(NOTES_STORE)) {
@@ -47,6 +48,15 @@ function ensureStores(db: IDBDatabase, oldVersion: number) {
   if (oldVersion < 7 && !db.objectStoreNames.contains(VERSIONS_STORE)) {
     const store = db.createObjectStore(VERSIONS_STORE, { keyPath: "id" });
     store.createIndex("meetingId", "meetingId", { unique: false });
+  }
+
+  if (oldVersion < 8 && !db.objectStoreNames.contains(WEBHOOK_DELIVERIES_STORE)) {
+    const store = db.createObjectStore(WEBHOOK_DELIVERIES_STORE, {
+      keyPath: "id",
+    });
+    store.createIndex("meetingId", "meetingId", { unique: false });
+    store.createIndex("eventId", "eventId", { unique: true });
+    store.createIndex("status", "status", { unique: false });
   }
 }
 

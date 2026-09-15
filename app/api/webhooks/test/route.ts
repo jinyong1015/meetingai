@@ -3,21 +3,9 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
-type SendWebhookBody = {
-  /** Preferred: immutable snapshot from the client queue. */
+type TestBody = {
+  destinationAlias?: string;
   payload?: Record<string, unknown>;
-  eventId?: string;
-  meeting?: {
-    id?: string;
-    title?: string;
-    startedAt?: string;
-    attendees?: string;
-    approvedVersion?: number | null;
-  };
-  markdown?: string;
-  memoMarkdown?: string;
-  summaryMarkdown?: string;
-  minutesMarkdown?: string;
 };
 
 function getWebhookUrl(): string | null {
@@ -34,41 +22,6 @@ function getWebhookUrl(): string | null {
   }
 }
 
-function buildLegacyPayload(body: SendWebhookBody): Record<string, unknown> | null {
-  const markdown =
-    typeof body.markdown === "string" ? body.markdown.trim() : "";
-  if (!markdown) return null;
-
-  const eventId =
-    typeof body.eventId === "string" && body.eventId.trim()
-      ? body.eventId.trim()
-      : `evt_${crypto.randomUUID()}`;
-
-  return {
-    schema_version: "1.0",
-    event_id: eventId,
-    event_type: "meeting.approved",
-    occurred_at: new Date().toISOString(),
-    meeting: {
-      id: body.meeting?.id ?? null,
-      title: body.meeting?.title ?? null,
-      started_at: body.meeting?.startedAt ?? null,
-      attendees: body.meeting?.attendees ?? null,
-      approved_version: body.meeting?.approvedVersion ?? null,
-    },
-    content: {
-      format: "markdown",
-      markdown,
-      memo_markdown:
-        typeof body.memoMarkdown === "string" ? body.memoMarkdown : "",
-      summary_markdown:
-        typeof body.summaryMarkdown === "string" ? body.summaryMarkdown : "",
-      minutes_markdown:
-        typeof body.minutesMarkdown === "string" ? body.minutesMarkdown : "",
-    },
-  };
-}
-
 export async function POST(request: Request) {
   const webhookUrl = getWebhookUrl();
   if (!webhookUrl) {
@@ -81,38 +34,49 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: SendWebhookBody;
+  let body: TestBody = {};
   try {
-    body = (await request.json()) as SendWebhookBody;
+    body = (await request.json()) as TestBody;
   } catch {
-    return NextResponse.json(
-      { error: "요청 본문이 올바른 JSON이 아닙니다." },
-      { status: 400 },
-    );
+    body = {};
   }
+
+  const eventId = `evt_test_${crypto.randomUUID()}`;
+  const destinationAlias =
+    typeof body.destinationAlias === "string" && body.destinationAlias.trim()
+      ? body.destinationAlias.trim()
+      : "사내 업무관리 시스템";
 
   const payload =
     body.payload && typeof body.payload === "object"
       ? body.payload
-      : buildLegacyPayload(body);
-
-  if (!payload) {
-    return NextResponse.json(
-      { error: "전송할 웹훅 본문이 비어 있습니다." },
-      { status: 400 },
-    );
-  }
-
-  const eventId =
-    typeof payload.event_id === "string" && payload.event_id
-      ? payload.event_id
-      : typeof body.eventId === "string" && body.eventId.trim()
-        ? body.eventId.trim()
-        : `evt_${crypto.randomUUID()}`;
+      : {
+          schema_version: "1.0",
+          event_id: eventId,
+          event_type: "meeting.webhook.test",
+          occurred_at: new Date().toISOString(),
+          destination_alias: destinationAlias,
+          meeting: {
+            id: "meeting_sample",
+            title: "웹훅 시험 발송 (샘플)",
+            approved_version: 0,
+          },
+          content: {
+            format: "markdown",
+            summary: "이것은 실제 회의 데이터가 아닌 시험 발송 샘플입니다.",
+            markdown:
+              "# 웹훅 시험 발송 (샘플)\n\n실제 회의 내용은 포함되지 않습니다.\n",
+          },
+          sample: true,
+        };
 
   const outbound = {
     ...payload,
-    event_id: eventId,
+    event_id:
+      typeof payload.event_id === "string" && payload.event_id
+        ? payload.event_id
+        : eventId,
+    sample: true,
   };
 
   const controller = new AbortController();
@@ -136,6 +100,7 @@ export async function POST(request: Request) {
     if (response.status >= 300 && response.status < 400) {
       return NextResponse.json(
         {
+          ok: false,
           error: "웹훅 수신처가 리다이렉트를 반환했습니다. 주소를 확인해 주세요.",
           status: response.status,
           responseTimeMs,
@@ -147,7 +112,8 @@ export async function POST(request: Request) {
     if (!response.ok) {
       return NextResponse.json(
         {
-          error: `웹훅 전송 실패 (HTTP ${response.status})`,
+          ok: false,
+          error: `연결하지 못했습니다. HTTP ${response.status}`,
           status: response.status,
           responseTimeMs,
         },
@@ -157,9 +123,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      eventId,
+      message: "연결에 성공했습니다.",
       status: response.status,
       responseTimeMs,
+      eventId: outbound.event_id,
     });
   } catch (err) {
     const message =
@@ -167,9 +134,13 @@ export async function POST(request: Request) {
         ? "웹훅 응답 시간이 초과되었습니다."
         : err instanceof Error
           ? err.message
-          : "웹훅 전송 중 오류가 발생했습니다.";
+          : "시험 발송 중 오류가 발생했습니다.";
     return NextResponse.json(
-      { error: message, responseTimeMs: Date.now() - started },
+      {
+        ok: false,
+        error: message,
+        responseTimeMs: Date.now() - started,
+      },
       { status: 502 },
     );
   } finally {

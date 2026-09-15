@@ -19,6 +19,7 @@ import {
 } from "@/lib/storage/generations";
 import { getMeeting, patchMeeting } from "@/lib/storage/meetings";
 import { getNotesByMeeting } from "@/lib/storage/notes";
+import { getAppSettings } from "@/lib/storage/settings";
 import {
   getMeetingTranscript,
   saveMeetingTranscript,
@@ -27,6 +28,7 @@ import {
   createGenerationVersion,
   listGenerationVersions,
 } from "@/lib/storage/versions";
+import { listWebhookDeliveries } from "@/lib/storage/webhookDeliveries";
 import {
   countNeedsReview,
   formatDetailMinutesText,
@@ -39,11 +41,29 @@ import type {
 } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
 import type { Note } from "@/lib/types/note";
-import { sttProviderLabel } from "@/lib/types/settings";
+import {
+  SETTINGS_CHANGED_EVENT,
+  sttProviderLabel,
+  type AppSettings,
+} from "@/lib/types/settings";
 import type { TranscriptSegment } from "@/lib/types/transcript";
 import type { GenerationVersion } from "@/lib/types/version";
+import {
+  DEFAULT_WEBHOOK_DESTINATION_ALIAS,
+  DEFAULT_WEBHOOK_INCLUDE_FLAGS,
+  includeFlagsFromSettings,
+  type WebhookDelivery,
+  type WebhookIncludeFlags,
+} from "@/lib/types/webhook";
 import { createId, formatMeetingDateTime } from "@/lib/utils/format-time";
-import { buildWebhookMarkdownPayload } from "@/lib/webhook/buildMarkdownPayload";
+import { buildWebhookPayload } from "@/lib/webhook/buildPayload";
+import {
+  cancelWebhookDelivery,
+  processDueWebhookDeliveries,
+  queueWebhookDelivery,
+  requeueFailedWebhookDelivery,
+  scheduleWebhookQueue,
+} from "@/lib/webhook/queue";
 
 type ReviewMeetingScreenProps = {
   meetingId: string;
@@ -93,26 +113,49 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "general" | "integrations"
+  >("general");
   const [banner, setBanner] = useState<string | null>(null);
-  const [webhookSendStatus, setWebhookSendStatus] = useState<
-    "idle" | "sending" | "success" | "error"
-  >("idle");
-  const [webhookSendMessage, setWebhookSendMessage] = useState<string | null>(
-    null,
-  );
+  const [webhookSettings, setWebhookSettings] = useState<{
+    enabled: boolean;
+    destinationAlias: string;
+    includeFlags: WebhookIncludeFlags;
+  }>({
+    enabled: false,
+    destinationAlias: DEFAULT_WEBHOOK_DESTINATION_ALIAS,
+    includeFlags: DEFAULT_WEBHOOK_INCLUDE_FLAGS,
+  });
+  const [webhookDeliveries, setWebhookDeliveries] = useState<
+    WebhookDelivery[]
+  >([]);
+  const [webhookBusyDeliveryId, setWebhookBusyDeliveryId] = useState<
+    string | null
+  >(null);
+  const [webhookSendConfirmOpen, setWebhookSendConfirmOpen] = useState(false);
 
   const reload = useCallback(async () => {
     setLoadError(null);
     try {
-      const [m, transcript, generation, notesRows, playable, versionRows] =
-        await Promise.all([
-          getMeeting(meetingId),
-          getMeetingTranscript(meetingId),
-          getMeetingGeneration(meetingId),
-          getNotesByMeeting(meetingId),
-          loadPlayableMeetingAudio(meetingId),
-          listGenerationVersions(meetingId),
-        ]);
+      const [
+        m,
+        transcript,
+        generation,
+        notesRows,
+        playable,
+        versionRows,
+        deliveryRows,
+        settings,
+      ] = await Promise.all([
+        getMeeting(meetingId),
+        getMeetingTranscript(meetingId),
+        getMeetingGeneration(meetingId),
+        getNotesByMeeting(meetingId),
+        loadPlayableMeetingAudio(meetingId),
+        listGenerationVersions(meetingId),
+        listWebhookDeliveries(meetingId),
+        getAppSettings(),
+      ]);
 
       if (!m) {
         setLoadError("회의를 찾을 수 없습니다.");
@@ -133,6 +176,12 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
       setMeeting(m);
       setNotes(notesRows);
       setVersions(versionRows);
+      setWebhookDeliveries(deliveryRows);
+      setWebhookSettings({
+        enabled: settings.webhookEnabled,
+        destinationAlias: settings.webhookDestinationAlias,
+        includeFlags: includeFlagsFromSettings(settings),
+      });
 
       if (transcript) {
         setSegments(transcript.segments);
@@ -189,6 +238,46 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    function onSettingsChanged(event: Event) {
+      const detail = (event as CustomEvent<AppSettings>).detail;
+      if (!detail) return;
+      setWebhookSettings({
+        enabled: detail.webhookEnabled,
+        destinationAlias: detail.webhookDestinationAlias,
+        includeFlags: includeFlagsFromSettings(detail),
+      });
+    }
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () =>
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function tickQueue() {
+      await processDueWebhookDeliveries();
+      if (cancelled) return;
+      const rows = await listWebhookDeliveries(meetingId);
+      if (!cancelled) setWebhookDeliveries(rows);
+      const meetingRow = await getMeeting(meetingId);
+      if (!cancelled && meetingRow) {
+        setMeeting((prev) =>
+          prev
+            ? { ...prev, displayStatus: meetingRow.displayStatus }
+            : prev,
+        );
+      }
+      scheduleWebhookQueue();
+    }
+    void tickQueue();
+    const interval = window.setInterval(() => void tickQueue(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [meetingId]);
 
   const currentFingerprint = useMemo(
     () =>
@@ -280,7 +369,7 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
     }
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(options?: { queueSend?: boolean }) {
     if (!hasAiResult) return;
     setConfirmBusy(true);
     try {
@@ -315,8 +404,55 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
           ? { ...prev, confirmed: true, displayStatus: "확정됨" }
           : prev,
       );
+
+      let sendNote = "";
+      if (options?.queueSend && webhookSettings.enabled) {
+        const eventId = createId("evt");
+        const includeFlags = webhookSettings.includeFlags;
+        const payloadSnapshot = buildWebhookPayload({
+          eventId,
+          meeting: {
+            id: meetingId,
+            title: meeting?.title ?? "회의록",
+            startedAt: meeting?.startedAt ?? new Date().toISOString(),
+            timezone: meeting?.timezone,
+            attendees: meeting?.attendees,
+            approvedVersion: version.versionNumber,
+          },
+          includeFlags,
+          notes,
+          summaryText,
+          detailMinutes,
+          detailText,
+          segments,
+        });
+        const delivery = await queueWebhookDelivery({
+          meetingId,
+          approvedVersion: version.versionNumber,
+          destinationAlias: webhookSettings.destinationAlias,
+          includeFlags,
+          payloadSnapshot,
+          eventId,
+        });
+        setWebhookDeliveries((prev) => [delivery, ...prev]);
+        setActiveTab("integrations");
+        sendNote = `\n외부 전송 대기 중 · ${webhookSettings.destinationAlias}`;
+        void processDueWebhookDeliveries().then(async () => {
+          const rows = await listWebhookDeliveries(meetingId);
+          setWebhookDeliveries(rows);
+          const meetingRow = await getMeeting(meetingId);
+          if (meetingRow) {
+            setMeeting((prev) =>
+              prev
+                ? { ...prev, displayStatus: meetingRow.displayStatus }
+                : prev,
+            );
+          }
+        });
+      }
+
       setBanner(
-        `회의록이 확정되었습니다. 확정 버전 v${version.versionNumber} · ${formatMeetingDateTime(version.createdAt)}`,
+        `회의록이 확정되었습니다. 확정 버전 v${version.versionNumber} · ${formatMeetingDateTime(version.createdAt)}${sendNote}`,
       );
       setConfirmOpen(false);
     } catch (err) {
@@ -403,69 +539,93 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
     URL.revokeObjectURL(url);
   }
 
-  async function handleSendWebhook() {
-    if (!meeting?.confirmed) return;
-    setWebhookSendStatus("sending");
-    setWebhookSendMessage(null);
-
-    const confirmedVersion =
-      confirmedVersionNumber != null
-        ? versions.find(
-            (version) =>
-              version.kind === "confirmed" &&
-              version.versionNumber === confirmedVersionNumber,
-          )
-        : undefined;
-
-    const parts = buildWebhookMarkdownPayload({
-      title: meeting.title,
-      notes,
-      summaryText: confirmedVersion?.summaryText ?? summaryText,
-      detailMinutes: confirmedVersion?.detailMinutes ?? detailMinutes,
-      detailText: confirmedVersion?.detailText ?? detailText,
-    });
-
+  async function enqueueConfirmedSend() {
+    if (!meeting?.confirmed || confirmedVersionNumber == null) return;
+    setWebhookBusyDeliveryId("new");
     try {
-      const response = await fetch("/api/webhooks/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          eventId: createId("evt"),
-          meeting: {
-            id: meeting.id,
-            title: meeting.title,
-            startedAt: meeting.startedAt,
-            attendees: meeting.attendees,
-            approvedVersion: confirmedVersionNumber,
-          },
-          markdown: parts.markdown,
-          memoMarkdown: parts.memoMarkdown,
-          summaryMarkdown: parts.summaryMarkdown,
-          minutesMarkdown: parts.minutesMarkdown,
-        }),
-      });
-
-      const data = (await response.json().catch(() => null)) as {
-        error?: string;
-        eventId?: string;
-      } | null;
-
-      if (!response.ok) {
-        throw new Error(data?.error ?? "웹훅 전송에 실패했습니다.");
-      }
-
-      setWebhookSendStatus("success");
-      setWebhookSendMessage(
-        data?.eventId
-          ? `Make 웹훅으로 전송했습니다. (event: ${data.eventId})`
-          : "Make 웹훅으로 전송했습니다.",
+      const confirmedVersion = versions.find(
+        (version) =>
+          version.kind === "confirmed" &&
+          version.versionNumber === confirmedVersionNumber,
       );
-      setBanner("확정본(메모·요약·회의록)을 마크다운으로 웹훅에 전송했습니다.");
+      const eventId = createId("evt");
+      const includeFlags = webhookSettings.includeFlags;
+      const payloadSnapshot = buildWebhookPayload({
+        eventId,
+        meeting: {
+          id: meeting.id,
+          title: meeting.title,
+          startedAt: meeting.startedAt,
+          timezone: meeting.timezone,
+          attendees: meeting.attendees,
+          approvedVersion: confirmedVersionNumber,
+        },
+        includeFlags,
+        notes,
+        summaryText: confirmedVersion?.summaryText ?? summaryText,
+        detailMinutes: confirmedVersion?.detailMinutes ?? detailMinutes,
+        detailText: confirmedVersion?.detailText ?? detailText,
+        segments,
+      });
+      const delivery = await queueWebhookDelivery({
+        meetingId,
+        approvedVersion: confirmedVersionNumber,
+        destinationAlias: webhookSettings.destinationAlias,
+        includeFlags,
+        payloadSnapshot,
+        eventId,
+      });
+      setWebhookDeliveries((prev) => [delivery, ...prev]);
+      setWebhookSendConfirmOpen(false);
+      setBanner(
+        `확정본 v${confirmedVersionNumber} 전송을 대기열에 등록했습니다.`,
+      );
+      await processDueWebhookDeliveries();
+      const rows = await listWebhookDeliveries(meetingId);
+      setWebhookDeliveries(rows);
+      const meetingRow = await getMeeting(meetingId);
+      if (meetingRow) {
+        setMeeting((prev) =>
+          prev ? { ...prev, displayStatus: meetingRow.displayStatus } : prev,
+        );
+      }
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "웹훅 전송에 실패했습니다.";
-      setWebhookSendStatus("error");
-      setWebhookSendMessage(message);
+      setBanner(
+        err instanceof Error ? err.message : "전송 등록에 실패했습니다.",
+      );
+    } finally {
+      setWebhookBusyDeliveryId(null);
+    }
+  }
+
+  async function handleCancelDelivery(id: string) {
+    setWebhookBusyDeliveryId(id);
+    try {
+      await cancelWebhookDelivery(id);
+      const rows = await listWebhookDeliveries(meetingId);
+      setWebhookDeliveries(rows);
+      setBanner("대기 중인 전송을 취소했습니다.");
+    } finally {
+      setWebhookBusyDeliveryId(null);
+    }
+  }
+
+  async function handleRetryDelivery(id: string) {
+    setWebhookBusyDeliveryId(id);
+    try {
+      await requeueFailedWebhookDelivery(id);
+      await processDueWebhookDeliveries();
+      const rows = await listWebhookDeliveries(meetingId);
+      setWebhookDeliveries(rows);
+      const meetingRow = await getMeeting(meetingId);
+      if (meetingRow) {
+        setMeeting((prev) =>
+          prev ? { ...prev, displayStatus: meetingRow.displayStatus } : prev,
+        );
+      }
+      setBanner("동일 event_id로 재전송을 시작했습니다.");
+    } finally {
+      setWebhookBusyDeliveryId(null);
     }
   }
 
@@ -674,10 +834,21 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
             onViewCurrentDraft={() => setViewingVersion(null)}
             confirmed={meeting.confirmed}
             confirmedVersionNumber={confirmedVersionNumber}
-            webhookSendStatus={webhookSendStatus}
-            webhookSendMessage={webhookSendMessage}
-            onSendWebhook={() => void handleSendWebhook()}
-            onOpenSettings={() => setSettingsOpen(true)}
+            webhookEnabled={webhookSettings.enabled}
+            webhookDestinationAlias={webhookSettings.destinationAlias}
+            webhookIncludeFlags={webhookSettings.includeFlags}
+            webhookDeliveries={webhookDeliveries}
+            webhookBusyDeliveryId={webhookBusyDeliveryId}
+            webhookSendConfirmOpen={webhookSendConfirmOpen}
+            onRequestSendWebhook={() => setWebhookSendConfirmOpen(true)}
+            onCancelSendWebhookConfirm={() => setWebhookSendConfirmOpen(false)}
+            onConfirmSendWebhook={() => void enqueueConfirmedSend()}
+            onCancelWebhookDelivery={(id) => void handleCancelDelivery(id)}
+            onRetryWebhookDelivery={(id) => void handleRetryDelivery(id)}
+            onOpenSettings={() => {
+              setSettingsInitialTab("integrations");
+              setSettingsOpen(true);
+            }}
           />
 
           <div className="glass-panel rounded-[var(--radius)] p-5 sm:p-6">
@@ -728,20 +899,45 @@ export function ReviewMeetingScreen({ meetingId }: ReviewMeetingScreenProps) {
         open={confirmOpen}
         title="회의록을 확정하시겠습니까?"
         description={
-          needsReviewCount > 0
-            ? `확정 후에도 수정할 수 있지만, 수정 시 새로운 버전이 생성됩니다.\n\n현재 확인 필요 항목: ${needsReviewCount}개\n확인 필요 문구는 자동으로 삭제되지 않습니다.`
-            : "확정 후에도 수정할 수 있지만, 수정 시 새로운 버전이 생성됩니다."
+          [
+            needsReviewCount > 0
+              ? `확정 후에도 수정할 수 있지만, 수정 시 새로운 버전이 생성됩니다.\n\n현재 확인 필요 항목: ${needsReviewCount}개\n확인 필요 문구는 자동으로 삭제되지 않습니다.`
+              : "확정 후에도 수정할 수 있지만, 수정 시 새로운 버전이 생성됩니다.",
+            webhookSettings.enabled
+              ? `\n\n외부 연동이 설정되어 있습니다.\n수신처\n${webhookSettings.destinationAlias}`
+              : "",
+          ].join("")
         }
-        confirmLabel={confirmBusy ? "확정 중…" : "확정"}
+        confirmLabel={
+          confirmBusy
+            ? "확정 중…"
+            : webhookSettings.enabled
+              ? "확정 및 전송"
+              : "확정"
+        }
+        secondaryLabel={
+          webhookSettings.enabled && !confirmBusy ? "확정만" : undefined
+        }
         onCancel={() => setConfirmOpen(false)}
+        onSecondary={() => {
+          if (!confirmBusy) void handleConfirm({ queueSend: false });
+        }}
         onConfirm={() => {
-          if (!confirmBusy) void handleConfirm();
+          if (!confirmBusy) {
+            void handleConfirm({
+              queueSend: webhookSettings.enabled,
+            });
+          }
         }}
       />
 
       <SettingsDialog
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsInitialTab}
+        onClose={() => {
+          setSettingsOpen(false);
+          setSettingsInitialTab("general");
+        }}
       />
     </div>
   );

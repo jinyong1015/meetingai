@@ -10,6 +10,10 @@ import type { EvidenceRef } from "@/lib/types/evidence";
 import type { MeetingResultTab } from "@/lib/types/generation";
 import type { TranscriptSegment } from "@/lib/types/transcript";
 import type { GenerationVersion } from "@/lib/types/version";
+import type {
+  WebhookDelivery,
+  WebhookIncludeFlags,
+} from "@/lib/types/webhook";
 
 type MeetingResultTabsProps = {
   activeTab: MeetingResultTab;
@@ -42,9 +46,17 @@ type MeetingResultTabsProps = {
   onViewCurrentDraft?: () => void;
   confirmed?: boolean;
   confirmedVersionNumber?: number | null;
-  webhookSendStatus?: "idle" | "sending" | "success" | "error";
-  webhookSendMessage?: string | null;
-  onSendWebhook?: () => void;
+  webhookEnabled?: boolean;
+  webhookDestinationAlias?: string;
+  webhookIncludeFlags?: WebhookIncludeFlags;
+  webhookDeliveries?: WebhookDelivery[];
+  webhookBusyDeliveryId?: string | null;
+  webhookSendConfirmOpen?: boolean;
+  onRequestSendWebhook?: () => void;
+  onCancelSendWebhookConfirm?: () => void;
+  onConfirmSendWebhook?: () => void;
+  onCancelWebhookDelivery?: (id: string) => void;
+  onRetryWebhookDelivery?: (id: string) => void;
   onOpenSettings?: () => void;
 };
 
@@ -55,6 +67,15 @@ const TABS: { id: MeetingResultTab; label: string }[] = [
   { id: "history", label: "이력" },
   { id: "integrations", label: "외부 연동" },
 ];
+
+const DEFAULT_FLAGS: WebhookIncludeFlags = {
+  meetingInfo: false,
+  summary: false,
+  detail: true,
+  actionItems: false,
+  transcript: false,
+  notes: false,
+};
 
 export function MeetingResultTabs({
   activeTab,
@@ -87,9 +108,17 @@ export function MeetingResultTabs({
   onViewCurrentDraft,
   confirmed = false,
   confirmedVersionNumber = null,
-  webhookSendStatus = "idle",
-  webhookSendMessage = null,
-  onSendWebhook,
+  webhookEnabled = false,
+  webhookDestinationAlias = "사내 업무관리 시스템",
+  webhookIncludeFlags = DEFAULT_FLAGS,
+  webhookDeliveries = [],
+  webhookBusyDeliveryId = null,
+  webhookSendConfirmOpen = false,
+  onRequestSendWebhook,
+  onCancelSendWebhookConfirm,
+  onConfirmSendWebhook,
+  onCancelWebhookDelivery,
+  onRetryWebhookDelivery,
   onOpenSettings,
 }: MeetingResultTabsProps) {
   return (
@@ -168,22 +197,33 @@ export function MeetingResultTabs({
             embedded
           />
         )}
-        {activeTab === "history" && onViewVersion && onRestoreVersion && onViewCurrentDraft && (
-          <HistoryPanel
-            versions={versions}
-            viewingVersionId={viewingVersionId}
-            onViewVersion={onViewVersion}
-            onRestoreVersion={onRestoreVersion}
-            onViewCurrentDraft={onViewCurrentDraft}
-          />
-        )}
+        {activeTab === "history" &&
+          onViewVersion &&
+          onRestoreVersion &&
+          onViewCurrentDraft && (
+            <HistoryPanel
+              versions={versions}
+              viewingVersionId={viewingVersionId}
+              onViewVersion={onViewVersion}
+              onRestoreVersion={onRestoreVersion}
+              onViewCurrentDraft={onViewCurrentDraft}
+            />
+          )}
         {activeTab === "integrations" && (
           <IntegrationsPanel
             confirmed={confirmed}
             confirmedVersionNumber={confirmedVersionNumber}
-            sendStatus={webhookSendStatus}
-            sendMessage={webhookSendMessage}
-            onSend={onSendWebhook}
+            webhookEnabled={webhookEnabled}
+            destinationAlias={webhookDestinationAlias}
+            includeFlags={webhookIncludeFlags}
+            deliveries={webhookDeliveries}
+            busyDeliveryId={webhookBusyDeliveryId}
+            sendConfirmOpen={webhookSendConfirmOpen}
+            onRequestSend={onRequestSendWebhook}
+            onCancelSendConfirm={onCancelSendWebhookConfirm}
+            onConfirmSend={onConfirmSendWebhook}
+            onCancelDelivery={onCancelWebhookDelivery}
+            onRetryDelivery={onRetryWebhookDelivery}
             onOpenSettings={onOpenSettings}
           />
         )}

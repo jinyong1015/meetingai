@@ -69,18 +69,21 @@ type SettingsTab =
   | "general"
   | "engines"
   | "prompts"
+  | "integrations"
   | "backup"
   | "about";
 
 type SettingsDialogProps = {
   open: boolean;
   onClose: () => void;
+  initialTab?: SettingsTab;
 };
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "general", label: "일반" },
   { id: "engines", label: "AI 엔진" },
   { id: "prompts", label: "AI 프롬프트" },
+  { id: "integrations", label: "외부 연동" },
   { id: "backup", label: "저장·백업" },
   { id: "about", label: "안내" },
 ];
@@ -134,6 +137,14 @@ type DraftState = {
   detailPrompt: string;
   summaryPromptVersion: number;
   detailPromptVersion: number;
+  webhookEnabled: boolean;
+  webhookDestinationAlias: string;
+  webhookIncludeMeetingInfo: boolean;
+  webhookIncludeSummary: boolean;
+  webhookIncludeDetail: boolean;
+  webhookIncludeActionItems: boolean;
+  webhookIncludeTranscript: boolean;
+  webhookIncludeNotes: boolean;
 };
 
 function toDraft(settings: AppSettings): DraftState {
@@ -150,6 +161,14 @@ function toDraft(settings: AppSettings): DraftState {
     detailPrompt: settings.detailPrompt,
     summaryPromptVersion: settings.summaryPromptVersion,
     detailPromptVersion: settings.detailPromptVersion,
+    webhookEnabled: settings.webhookEnabled,
+    webhookDestinationAlias: settings.webhookDestinationAlias,
+    webhookIncludeMeetingInfo: settings.webhookIncludeMeetingInfo,
+    webhookIncludeSummary: settings.webhookIncludeSummary,
+    webhookIncludeDetail: settings.webhookIncludeDetail,
+    webhookIncludeActionItems: settings.webhookIncludeActionItems,
+    webhookIncludeTranscript: settings.webhookIncludeTranscript,
+    webhookIncludeNotes: settings.webhookIncludeNotes,
   };
 }
 
@@ -166,11 +185,23 @@ function draftsEqual(a: DraftState, b: DraftState): boolean {
     a.summaryPrompt === b.summaryPrompt &&
     a.detailPrompt === b.detailPrompt &&
     a.summaryPromptVersion === b.summaryPromptVersion &&
-    a.detailPromptVersion === b.detailPromptVersion
+    a.detailPromptVersion === b.detailPromptVersion &&
+    a.webhookEnabled === b.webhookEnabled &&
+    a.webhookDestinationAlias === b.webhookDestinationAlias &&
+    a.webhookIncludeMeetingInfo === b.webhookIncludeMeetingInfo &&
+    a.webhookIncludeSummary === b.webhookIncludeSummary &&
+    a.webhookIncludeDetail === b.webhookIncludeDetail &&
+    a.webhookIncludeActionItems === b.webhookIncludeActionItems &&
+    a.webhookIncludeTranscript === b.webhookIncludeTranscript &&
+    a.webhookIncludeNotes === b.webhookIncludeNotes
   );
 }
 
-export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onClose,
+  initialTab = "general",
+}: SettingsDialogProps) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -189,6 +220,14 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const [llmEngines, setLlmEngines] = useState<
     LlmStatusResponse["engines"] | null
   >(null);
+  const [webhookConfigured, setWebhookConfigured] = useState(false);
+  const [webhookStatusDetail, setWebhookStatusDetail] = useState<string | null>(
+    null,
+  );
+  const [testConfirmOpen, setTestConfirmOpen] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -236,6 +275,11 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   useEffect(() => {
     if (!open) return;
+    setTab(initialTab);
+  }, [open, initialTab]);
+
+  useEffect(() => {
+    if (!open) return;
     closeRef.current?.focus();
 
     function onKey(event: KeyboardEvent) {
@@ -257,14 +301,17 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       setTrialResult(null);
       setBackupMessage(null);
       setBackupError(null);
+      setTestResult(null);
+      setTestError(null);
       try {
-        const [settings, sttRes, llmRes, defaultsRes, estimate] =
+        const [settings, sttRes, llmRes, defaultsRes, estimate, webhookRes] =
           await Promise.all([
             getAppSettings(),
             fetch("/api/stt/status", { cache: "no-store" }),
             fetch("/api/llm/status", { cache: "no-store" }),
             fetch("/api/local-engines/defaults", { cache: "no-store" }),
             getStorageEstimate(),
+            fetch("/api/webhooks/status", { cache: "no-store" }),
           ]);
         if (cancelled) return;
 
@@ -321,6 +368,19 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         if (llmRes.ok) {
           const status = (await llmRes.json()) as LlmStatusResponse;
           nextLlm = status.engines;
+        }
+        if (webhookRes.ok) {
+          const status = (await webhookRes.json()) as {
+            configured?: boolean;
+            detail?: string;
+          };
+          setWebhookConfigured(Boolean(status.configured));
+          setWebhookStatusDetail(
+            typeof status.detail === "string" ? status.detail : null,
+          );
+        } else {
+          setWebhookConfigured(false);
+          setWebhookStatusDetail("웹훅 상태를 확인하지 못했습니다.");
         }
 
         // Browser probe for local engines (Vercel-safe)
@@ -516,6 +576,16 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         detailPrompt: draft.detailPrompt,
         summaryPromptVersion: summaryVersion,
         detailPromptVersion: detailVersion,
+        webhookEnabled: draft.webhookEnabled,
+        webhookDestinationAlias:
+          draft.webhookDestinationAlias.trim() ||
+          DEFAULT_APP_SETTINGS.webhookDestinationAlias,
+        webhookIncludeMeetingInfo: draft.webhookIncludeMeetingInfo,
+        webhookIncludeSummary: draft.webhookIncludeSummary,
+        webhookIncludeDetail: draft.webhookIncludeDetail,
+        webhookIncludeActionItems: draft.webhookIncludeActionItems,
+        webhookIncludeTranscript: draft.webhookIncludeTranscript,
+        webhookIncludeNotes: draft.webhookIncludeNotes,
       });
       const next = toDraft(saved);
       setBaseline(next);
@@ -601,6 +671,56 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       );
     } finally {
       setProbeBusy(false);
+    }
+  }
+
+  async function runWebhookTest() {
+    setTestConfirmOpen(false);
+    setTestBusy(true);
+    setTestResult(null);
+    setTestError(null);
+    try {
+      const response = await fetch("/api/webhooks/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destinationAlias: draft.webhookDestinationAlias,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        status?: number;
+        responseTimeMs?: number;
+      } | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(
+          [
+            data?.error ?? "연결하지 못했습니다.",
+            data?.status != null ? `HTTP ${data.status}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        );
+      }
+      setTestResult(
+        [
+          "✓ 연결에 성공했습니다.",
+          data.status != null ? `HTTP ${data.status}` : null,
+          data.responseTimeMs != null
+            ? `응답 시간 ${data.responseTimeMs}ms`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch (err) {
+      setTestError(
+        err instanceof Error ? err.message : "시험 발송에 실패했습니다.",
+      );
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -1175,6 +1295,126 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
               </div>
             )}
 
+            {tab === "integrations" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-base font-semibold">외부 연동</h3>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    확정된 회의록을 외부 시스템으로 자동 전송합니다. 기본값은
+                    꺼짐이며, URL은 서버 환경변수에만 보관됩니다.
+                  </p>
+                </div>
+
+                <label className="flex items-center justify-between gap-3 rounded-xl bg-white/55 px-4 py-3 ring-1 ring-[var(--border)]">
+                  <span className="text-sm font-medium">웹훅</span>
+                  <span className="flex items-center gap-2 text-sm">
+                    <span className="text-[var(--muted)]">
+                      {draft.webhookEnabled ? "ON" : "OFF"}
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-[var(--accent)]"
+                      checked={draft.webhookEnabled}
+                      disabled={loading || saving}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          webhookEnabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </span>
+                </label>
+
+                <div>
+                  <label className="text-sm font-medium" htmlFor="webhook-alias">
+                    수신처
+                  </label>
+                  <select
+                    id="webhook-alias"
+                    className="mt-2 w-full rounded-xl bg-white/80 px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] focus:ring-[var(--border-strong)]"
+                    value={draft.webhookDestinationAlias}
+                    disabled={loading || saving}
+                    onChange={(event) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        webhookDestinationAlias: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="사내 업무관리 시스템">
+                      사내 업무관리 시스템
+                    </option>
+                    <option value="Make 웹훅">Make 웹훅</option>
+                  </select>
+                  <p className="mt-2 text-xs text-[var(--muted)]">
+                    {webhookConfigured
+                      ? webhookStatusDetail ??
+                        "서버에 MAKE_WEBHOOK_URL이 설정되어 있습니다."
+                      : webhookStatusDetail ??
+                        "MAKE_WEBHOOK_URL이 설정되지 않았습니다."}
+                  </p>
+                </div>
+
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium">전송 항목</legend>
+                  {(
+                    [
+                      ["webhookIncludeMeetingInfo", "회의 정보"],
+                      ["webhookIncludeSummary", "요약"],
+                      ["webhookIncludeDetail", "상세 회의록"],
+                      ["webhookIncludeActionItems", "후속 업무"],
+                      ["webhookIncludeTranscript", "전사문"],
+                      ["webhookIncludeNotes", "메모"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label
+                      key={key}
+                      className="flex items-center gap-2 text-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-[var(--accent)]"
+                        checked={draft[key]}
+                        disabled={loading || saving}
+                        onChange={(event) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            [key]: event.target.checked,
+                          }))
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  <p className="pt-1 text-xs text-[var(--muted)]">
+                    음성 파일은 전송하지 않습니다.
+                  </p>
+                </fieldset>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-ghost px-4 py-2 text-sm"
+                    disabled={loading || saving || testBusy || !webhookConfigured}
+                    onClick={() => setTestConfirmOpen(true)}
+                  >
+                    {testBusy ? "시험 발송 중…" : "시험 발송"}
+                  </button>
+                </div>
+                {testResult && (
+                  <p className="text-sm text-[var(--success)]" role="status">
+                    {testResult}
+                  </p>
+                )}
+                {testError && (
+                  <p className="text-sm text-[var(--danger)]" role="alert">
+                    {testError}
+                  </p>
+                )}
+              </div>
+            )}
+
             {tab === "backup" && (
               <div className="space-y-4">
                 <div>
@@ -1245,9 +1485,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                   보관됩니다.
                 </p>
                 <p>
-                  외부 연동(웹훅)은 `.env.local`의 `MAKE_WEBHOOK_URL`로
-                  설정합니다. 검토 화면의 외부 연동 탭에서 확정본을
-                  마크다운으로 전송할 수 있습니다.
+                  외부 연동(웹훅)은 설정 → 외부 연동 탭에서 켜고, 수신처 URL은
+                  `.env.local`의 `MAKE_WEBHOOK_URL`로만 등록합니다. 확정본 전송과
+                  이력은 검토 화면의 외부 연동 탭에서 관리합니다.
                 </p>
               </div>
             )}
@@ -1326,6 +1566,15 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         confirmLabel="시험 생성"
         onCancel={() => setTrialConfirmOpen(false)}
         onConfirm={() => void runTrialGeneration()}
+      />
+
+      <ConfirmDialog
+        open={testConfirmOpen}
+        title="시험 데이터를 발송하시겠습니까?"
+        description={`실제 회의 내용은 포함되지 않습니다.\n\n수신처\n${draft.webhookDestinationAlias}`}
+        confirmLabel="시험 발송"
+        onCancel={() => setTestConfirmOpen(false)}
+        onConfirm={() => void runWebhookTest()}
       />
     </>
   );

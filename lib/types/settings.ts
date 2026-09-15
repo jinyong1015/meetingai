@@ -4,6 +4,10 @@ import {
   DEFAULT_DETAIL_USER_PROMPT,
   DEFAULT_SUMMARY_USER_PROMPT,
 } from "@/lib/llm/prompts";
+import {
+  DEFAULT_WEBHOOK_DESTINATION_ALIAS,
+  DEFAULT_WEBHOOK_INCLUDE_FLAGS,
+} from "@/lib/types/webhook";
 
 export type AppTheme = "default";
 
@@ -36,6 +40,16 @@ export type AppSettings = {
   detailPrompt: string;
   summaryPromptVersion: number;
   detailPromptVersion: number;
+  /** SCR-06: webhook integration master switch (default OFF). */
+  webhookEnabled: boolean;
+  /** Display alias for the single MVP destination. */
+  webhookDestinationAlias: string;
+  webhookIncludeMeetingInfo: boolean;
+  webhookIncludeSummary: boolean;
+  webhookIncludeDetail: boolean;
+  webhookIncludeActionItems: boolean;
+  webhookIncludeTranscript: boolean;
+  webhookIncludeNotes: boolean;
   updatedAt: string;
 };
 
@@ -60,6 +74,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   detailPrompt: DEFAULT_DETAIL_USER_PROMPT,
   summaryPromptVersion: 1,
   detailPromptVersion: 1,
+  webhookEnabled: false,
+  webhookDestinationAlias: DEFAULT_WEBHOOK_DESTINATION_ALIAS,
+  webhookIncludeMeetingInfo: DEFAULT_WEBHOOK_INCLUDE_FLAGS.meetingInfo,
+  webhookIncludeSummary: DEFAULT_WEBHOOK_INCLUDE_FLAGS.summary,
+  webhookIncludeDetail: DEFAULT_WEBHOOK_INCLUDE_FLAGS.detail,
+  webhookIncludeActionItems: DEFAULT_WEBHOOK_INCLUDE_FLAGS.actionItems,
+  webhookIncludeTranscript: DEFAULT_WEBHOOK_INCLUDE_FLAGS.transcript,
+  webhookIncludeNotes: DEFAULT_WEBHOOK_INCLUDE_FLAGS.notes,
   updatedAt: new Date(0).toISOString(),
 };
 

@@ -8,9 +8,12 @@ type ConfirmDialogProps = {
   description: string;
   confirmLabel: string;
   cancelLabel?: string;
+  /** Optional middle action (e.g. "확정만"). */
+  secondaryLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  onSecondary?: () => void;
 };
 
 export function ConfirmDialog({
@@ -19,9 +22,11 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   cancelLabel = "취소",
+  secondaryLabel,
   danger = false,
   onConfirm,
   onCancel,
+  onSecondary,
 }: ConfirmDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -61,7 +66,7 @@ export function ConfirmDialog({
         >
           {description}
         </p>
-        <div className="mt-6 flex justify-end gap-2">
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
           <button
             ref={cancelRef}
             type="button"
@@ -70,6 +75,15 @@ export function ConfirmDialog({
           >
             {cancelLabel}
           </button>
+          {secondaryLabel && onSecondary && (
+            <button
+              type="button"
+              className="btn btn-ghost px-4 py-2"
+              onClick={onSecondary}
+            >
+              {secondaryLabel}
+            </button>
+          )}
           <button
             type="button"
             className={`btn px-4 py-2 ${danger ? "btn-danger" : "btn-primary"}`}
