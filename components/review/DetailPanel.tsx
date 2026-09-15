@@ -6,6 +6,8 @@ import type {
   DetailAgendaItem,
   MeetingDetailMinutes,
 } from "@/lib/types/detail";
+import type { EvidenceRef } from "@/lib/types/evidence";
+import { formatTimestamp } from "@/lib/utils/format-time";
 
 type DetailPanelProps = {
   detailMinutes: MeetingDetailMinutes | null;
@@ -14,6 +16,10 @@ type DetailPanelProps = {
   sourceLabel?: string | null;
   onSave?: (next: MeetingDetailMinutes) => Promise<void> | void;
   onRegenerate?: () => void;
+  onOpenEvidence?: (evidence: EvidenceRef) => void;
+  showAiOriginalToggle?: boolean;
+  viewingAiOriginal?: boolean;
+  onToggleAiOriginal?: () => void;
 };
 
 const fieldClassName =
@@ -56,7 +62,7 @@ function emptyAgenda(): DetailAgendaItem {
   return {
     title: "",
     discussions: [{ speaker: null, content: "" }],
-    decisions: [""],
+    decisions: [{ text: "" }],
     actionItems: [{ task: "", owner: null, due: "" }],
   };
 }
@@ -83,16 +89,47 @@ function normalizeDetail(draft: MeetingDetailMinutes): MeetingDetailMinutes {
           content: item.content.trim(),
         }))
         .filter((item) => item.content),
-      decisions: agenda.decisions.map((item) => item.trim()).filter(Boolean),
+      decisions: agenda.decisions
+        .map((item) => ({
+          text: item.text.trim(),
+          evidence: item.evidence ?? null,
+          needsReview: item.needsReview,
+        }))
+        .filter((item) => item.text),
       actionItems: agenda.actionItems
         .map((item) => ({
           task: item.task.trim(),
           owner: null,
           due: item.due?.trim() || null,
+          evidence: item.evidence ?? null,
+          needsReview: item.needsReview,
         }))
         .filter((item) => item.task),
     })),
   };
+}
+
+function EvidenceButton({
+  evidence,
+  onOpen,
+}: {
+  evidence?: EvidenceRef | null;
+  onOpen?: (evidence: EvidenceRef) => void;
+}) {
+  if (!evidence || !onOpen) return null;
+  const label =
+    evidence.startTimeSec != null
+      ? `근거 [${formatTimestamp(evidence.startTimeSec)}]`
+      : "근거";
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost px-2 py-1 text-xs text-[var(--accent)]"
+      onClick={() => onOpen(evidence)}
+    >
+      {label}
+    </button>
+  );
 }
 
 function isCurrentDetailShape(
@@ -216,6 +253,10 @@ export function DetailPanel({
   sourceLabel = null,
   onSave,
   onRegenerate,
+  onOpenEvidence,
+  showAiOriginalToggle = false,
+  viewingAiOriginal = false,
+  onToggleAiOriginal,
 }: DetailPanelProps) {
   const fallback = detailText?.trim() ?? "";
   const showStructured =
@@ -286,9 +327,21 @@ export function DetailPanel({
             {sourceLabel ? ` · ${sourceLabel}` : ""}
           </p>
         </div>
-        {(onRegenerate || (showStructured && onSave)) && !pending && (
+        {(onRegenerate ||
+          (showStructured && onSave) ||
+          showAiOriginalToggle) &&
+          !pending && (
           <div className="flex flex-wrap items-center gap-2">
-            {onRegenerate && !editing && (
+            {showAiOriginalToggle && onToggleAiOriginal && !editing && (
+              <button
+                type="button"
+                onClick={onToggleAiOriginal}
+                className="btn btn-ghost px-3 py-1.5 text-sm"
+              >
+                {viewingAiOriginal ? "사용자 수정본" : "AI 생성본"}
+              </button>
+            )}
+            {onRegenerate && !editing && !viewingAiOriginal && (
               <button
                 type="button"
                 onClick={onRegenerate}
@@ -297,7 +350,7 @@ export function DetailPanel({
                 상세만 재생성
               </button>
             )}
-            {showStructured && onSave && (
+            {showStructured && onSave && !viewingAiOriginal && (
               editing ? (
               <>
                 <button
@@ -493,17 +546,18 @@ export function DetailPanel({
 
                 <LineListEditor
                   label="결정 사항"
-                  values={agenda.decisions}
+                  values={agenda.decisions.map((item) => item.text)}
                   placeholder="결정 사항을 입력하세요"
                   onChange={(index, value) => {
                     const decisions = [...agenda.decisions];
-                    decisions[index] = value;
+                    const prev = decisions[index] ?? { text: "" };
+                    decisions[index] = { ...prev, text: value };
                     updateAgenda(agendaIndex, { ...agenda, decisions });
                   }}
                   onAdd={() =>
                     updateAgenda(agendaIndex, {
                       ...agenda,
-                      decisions: [...agenda.decisions, ""],
+                      decisions: [...agenda.decisions, { text: "" }],
                     })
                   }
                   onRemove={(index) =>
@@ -677,13 +731,26 @@ export function DetailPanel({
                       <ul className="space-y-1.5">
                         {agenda.decisions.map((item) => (
                           <li
-                            key={item}
-                            className="flex gap-2 text-sm font-medium leading-relaxed text-[var(--success)]"
+                            key={item.text}
+                            className="flex flex-wrap items-start justify-between gap-2 text-sm font-medium leading-relaxed text-[var(--success)]"
                           >
-                            <span aria-hidden className="mt-0.5 shrink-0">
-                              ✓
+                            <span className="flex min-w-0 gap-2">
+                              <span aria-hidden className="mt-0.5 shrink-0">
+                                ✓
+                              </span>
+                              <span>
+                                {item.text}
+                                {item.needsReview ? (
+                                  <span className="ml-2 text-xs text-[var(--warning)]">
+                                    확인 필요
+                                  </span>
+                                ) : null}
+                              </span>
                             </span>
-                            <span>{item}</span>
+                            <EvidenceButton
+                              evidence={item.evidence}
+                              onOpen={onOpenEvidence}
+                            />
                           </li>
                         ))}
                       </ul>
@@ -699,12 +766,25 @@ export function DetailPanel({
                             key={item.task}
                             className="flex flex-col gap-2 rounded-xl bg-[var(--warning-soft)]/70 px-3.5 py-3 ring-1 ring-[var(--border)] sm:flex-row sm:items-center sm:justify-between"
                           >
-                            <p className="min-w-0 text-sm font-semibold text-[var(--foreground)]">
-                              {item.task}
-                            </p>
-                            <span className="inline-flex shrink-0 items-center rounded-lg bg-white/80 px-2.5 py-1 text-xs font-semibold text-[var(--warning)] ring-1 ring-[var(--border)]">
-                              기한 {item.due?.trim() || "미정"}
-                            </span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-[var(--foreground)]">
+                                {item.task}
+                                {item.needsReview ? (
+                                  <span className="ml-2 text-xs font-medium text-[var(--warning)]">
+                                    확인 필요
+                                  </span>
+                                ) : null}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap items-center gap-2">
+                              <span className="inline-flex items-center rounded-lg bg-white/80 px-2.5 py-1 text-xs font-semibold text-[var(--warning)] ring-1 ring-[var(--border)]">
+                                기한 {item.due?.trim() || "미정"}
+                              </span>
+                              <EvidenceButton
+                                evidence={item.evidence}
+                                onOpen={onOpenEvidence}
+                              />
+                            </div>
                           </li>
                         ))}
                       </ul>

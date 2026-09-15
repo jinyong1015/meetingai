@@ -25,6 +25,11 @@ export async function getMeetingGeneration(
       ? {
           ...row,
           detailMinutes: row.detailMinutes ?? null,
+          aiOriginalSummaryText: row.aiOriginalSummaryText ?? null,
+          aiOriginalDetailMinutes: row.aiOriginalDetailMinutes ?? null,
+          aiOriginalDetailText: row.aiOriginalDetailText ?? null,
+          inputFingerprint: row.inputFingerprint ?? null,
+          confirmedVersionNumber: row.confirmedVersionNumber ?? null,
         }
       : undefined;
   } finally {
@@ -37,9 +42,16 @@ export async function saveMeetingGeneration(input: {
   summaryText?: string | null;
   detailText?: string | null;
   detailMinutes?: MeetingDetailMinutes | null;
+  aiOriginalSummaryText?: string | null;
+  aiOriginalDetailMinutes?: MeetingDetailMinutes | null;
+  aiOriginalDetailText?: string | null;
+  inputFingerprint?: string | null;
+  confirmedVersionNumber?: number | null;
   source: GenerationSource;
   llmProvider?: string;
   model?: string;
+  /** When true, refresh AI original fields from the new draft values. */
+  preserveAsAiOriginal?: boolean;
 }): Promise<MeetingGeneration> {
   const db = await openDb();
   try {
@@ -55,20 +67,64 @@ export async function saveMeetingGeneration(input: {
       store.get(input.meetingId),
     )) as MeetingGeneration | undefined;
 
+    const summaryText =
+      input.summaryText !== undefined
+        ? input.summaryText
+        : (existing?.summaryText ?? null);
+    const detailText =
+      input.detailText !== undefined
+        ? input.detailText
+        : (existing?.detailText ?? null);
+    const detailMinutes =
+      input.detailMinutes !== undefined
+        ? input.detailMinutes
+        : (existing?.detailMinutes ?? null);
+
+    let aiOriginalSummaryText =
+      input.aiOriginalSummaryText !== undefined
+        ? input.aiOriginalSummaryText
+        : (existing?.aiOriginalSummaryText ?? null);
+    let aiOriginalDetailMinutes =
+      input.aiOriginalDetailMinutes !== undefined
+        ? input.aiOriginalDetailMinutes
+        : (existing?.aiOriginalDetailMinutes ?? null);
+    let aiOriginalDetailText =
+      input.aiOriginalDetailText !== undefined
+        ? input.aiOriginalDetailText
+        : (existing?.aiOriginalDetailText ?? null);
+
+    if (input.preserveAsAiOriginal) {
+      if (input.summaryText !== undefined) {
+        aiOriginalSummaryText = input.summaryText;
+      }
+      if (input.detailMinutes !== undefined) {
+        aiOriginalDetailMinutes = input.detailMinutes;
+      }
+      if (input.detailText !== undefined) {
+        aiOriginalDetailText = input.detailText;
+      }
+    } else if (!existing) {
+      aiOriginalSummaryText = summaryText;
+      aiOriginalDetailMinutes = detailMinutes;
+      aiOriginalDetailText = detailText;
+    }
+
     const next: MeetingGeneration = {
       meetingId: input.meetingId,
-      summaryText:
-        input.summaryText !== undefined
-          ? input.summaryText
-          : (existing?.summaryText ?? null),
-      detailText:
-        input.detailText !== undefined
-          ? input.detailText
-          : (existing?.detailText ?? null),
-      detailMinutes:
-        input.detailMinutes !== undefined
-          ? input.detailMinutes
-          : (existing?.detailMinutes ?? null),
+      summaryText,
+      detailText,
+      detailMinutes,
+      aiOriginalSummaryText,
+      aiOriginalDetailMinutes,
+      aiOriginalDetailText,
+      inputFingerprint:
+        input.inputFingerprint !== undefined
+          ? input.inputFingerprint
+          : (existing?.inputFingerprint ?? null),
+      confirmedVersionNumber:
+        input.confirmedVersionNumber !== undefined
+          ? input.confirmedVersionNumber
+          : (existing?.confirmedVersionNumber ?? null),
       source: input.source,
       llmProvider:
         input.llmProvider !== undefined

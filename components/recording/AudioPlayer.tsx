@@ -10,6 +10,9 @@ type AudioPlayerProps = {
   /** Seek target in seconds (from memo timestamps). */
   seekToSec?: number | null;
   onSeekHandled?: () => void;
+  /** Optional stop point for evidence clip playback. */
+  stopAtSec?: number | null;
+  onStoppedAtClipEnd?: () => void;
   className?: string;
 };
 
@@ -19,6 +22,8 @@ export function AudioPlayer({
   fileName = "meeting-audio",
   seekToSec = null,
   onSeekHandled,
+  stopAtSec = null,
+  onStoppedAtClipEnd,
   className = "",
 }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -27,7 +32,12 @@ export function AudioPlayer({
   const [currentSec, setCurrentSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const stopAtRef = useRef<number | null>(null);
   const sliderId = useId();
+
+  useEffect(() => {
+    stopAtRef.current = stopAtSec;
+  }, [stopAtSec]);
 
   useEffect(() => {
     const url = URL.createObjectURL(blob);
@@ -95,6 +105,24 @@ export function AudioPlayer({
     }
   }
 
+  function clearClipStop() {
+    stopAtRef.current = null;
+  }
+
+  async function continuePlay() {
+    clearClipStop();
+    const audio = audioRef.current;
+    if (!audio) return;
+    try {
+      await audio.play();
+      setPlaying(true);
+      setError(null);
+    } catch {
+      setError("브라우저에서 재생을 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.");
+      setPlaying(false);
+    }
+  }
+
   return (
     <div
       className={`rounded-2xl bg-white/60 px-4 py-3 ring-1 ring-[var(--border)] ${className}`}
@@ -108,6 +136,13 @@ export function AudioPlayer({
             const audio = audioRef.current;
             if (!audio) return;
             setCurrentSec(audio.currentTime);
+            const stop = stopAtRef.current;
+            if (stop != null && audio.currentTime >= stop) {
+              audio.pause();
+              setPlaying(false);
+              stopAtRef.current = null;
+              onStoppedAtClipEnd?.();
+            }
           }}
           onLoadedMetadata={() => {
             const audio = audioRef.current;
@@ -131,6 +166,16 @@ export function AudioPlayer({
         >
           {playing ? "일시정지" : "재생"}
         </button>
+        {stopAtSec != null && !playing && (
+          <button
+            type="button"
+            className="btn btn-ghost px-3 py-2 text-sm"
+            onClick={() => void continuePlay()}
+            disabled={!objectUrl}
+          >
+            계속 재생
+          </button>
+        )}
         <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[var(--muted)]">
           <span className="font-[family-name:var(--font-mono)] tabular-nums">
             {formatTimestamp(currentSec)}

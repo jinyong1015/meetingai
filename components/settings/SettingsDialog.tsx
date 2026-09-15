@@ -867,8 +867,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                   보관됩니다.
                 </p>
                 <p>
-                  외부 연동(웹훅) 설정은 확정·전송 기능(SCR-06)과 함께
-                  제공됩니다.
+                  외부 연동(웹훅)은 `.env.local`의 `MAKE_WEBHOOK_URL`로
+                  설정합니다. 검토 화면의 외부 연동 탭에서 확정본을
+                  마크다운으로 전송할 수 있습니다.
                 </p>
               </div>
             )}

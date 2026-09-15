@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { NoteSection } from "@/components/note/NoteSection";
 import { AiConsentDialog } from "@/components/recording/AiConsentDialog";
 import { AiProcessingPanel } from "@/components/recording/AiProcessingPanel";
 import { AudioPlayer } from "@/components/recording/AudioPlayer";
 import { AudioWaveform } from "@/components/recording/AudioWaveform";
-import { MeetingResultTabs } from "@/components/review/MeetingResultTabs";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import {
   createInitialProcessingSteps,
@@ -24,11 +24,11 @@ import {
   type MicAnalyserError,
 } from "@/lib/hooks/useMicAnalyser";
 import {
-  VIRTUAL_DETAIL_MINUTES,
-  VIRTUAL_DETAIL_TEXT,
   VIRTUAL_SUMMARY_TEXT,
   VIRTUAL_TRANSCRIPT_SEGMENTS,
+  buildVirtualDetailMinutes,
 } from "@/lib/mocks/virtualMeetingResult";
+import { buildGenerationInputFingerprint } from "@/lib/review/inputFingerprint";
 import {
   deleteMeetingAudioData,
   loadPlayableMeetingAudio,
@@ -47,12 +47,15 @@ import {
   getMeetingTranscript,
   saveMeetingTranscript,
 } from "@/lib/storage/transcripts";
+import {
+  createGenerationVersion,
+  deleteGenerationVersionsByMeeting,
+} from "@/lib/storage/versions";
 import { mapSttSegmentsToTranscript } from "@/lib/stt/mapSegments";
 import type { SttSegmentResult } from "@/lib/stt/types";
 import type { MeetingAudio } from "@/lib/types/audio";
 import type { MeetingDetailMinutes } from "@/lib/types/detail";
 import { formatDetailMinutesText } from "@/lib/types/detail";
-import type { MeetingResultTab } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
 import { sttProviderLabel, llmProviderLabel } from "@/lib/types/settings";
 import {
@@ -96,6 +99,7 @@ function extensionForMime(mimeType: string): string {
 }
 
 export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
+  const router = useRouter();
   const [meeting, setMeeting] = useState<Meeting | null | undefined>(undefined);
   const [title, setTitle] = useState("");
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
@@ -117,7 +121,6 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     null,
   );
   const [processingTickMs, setProcessingTickMs] = useState(0);
-  const [resultTab, setResultTab] = useState<MeetingResultTab>("transcript");
   const [summaryText, setSummaryText] = useState<string | null>(null);
   const [detailText, setDetailText] = useState<string | null>(null);
   const [detailMinutes, setDetailMinutes] =
@@ -340,7 +343,6 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         generation?.detailText
       ) {
         setShowReview(true);
-        setResultTab("transcript");
       }
 
       // AI-05: resume pending AssemblyAI job without creating a new request
@@ -707,14 +709,36 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       }
 
       if (summary || detailBody || detail) {
+        const transcriptRow = await getMeetingTranscript(meetingId);
+        const fingerprint = buildGenerationInputFingerprint({
+          segments: transcriptRow?.segments ?? reviewSegments,
+          notes,
+        });
+        const existing = await getMeetingGeneration(meetingId);
         await saveMeetingGeneration({
           meetingId,
           summaryText: runSummary ? summary : undefined,
           detailText: runDetail ? detailBody : undefined,
           detailMinutes: runDetail ? detail : undefined,
+          inputFingerprint: fingerprint,
           source: "llm",
           llmProvider,
           model: data.model,
+          preserveAsAiOriginal: true,
+        });
+        await createGenerationVersion({
+          meetingId,
+          kind: existing ? "ai_regenerated" : "ai_initial",
+          summaryText: runSummary
+            ? summary
+            : (existing?.summaryText ?? summaryText),
+          detailText: runDetail
+            ? detailBody
+            : (existing?.detailText ?? detailText),
+          detailMinutes: runDetail
+            ? detail
+            : (existing?.detailMinutes ?? detailMinutes),
+          source: "llm",
         });
       }
 
@@ -734,8 +758,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         finishStep("complete", "success");
         setProcessingActive(false);
         setShowReview(true);
-        if (summary) setResultTab("summary");
-        else if (detail) setResultTab("detail");
+        router.push(`/meetings/${meetingId}`);
       } else {
         setShowReview(true);
       }
@@ -1088,9 +1111,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     setDetailMinutes(null);
     setSummarySourceLabel(null);
     setGenerationSource("llm");
-    setResultTab("transcript");
     void deleteMeetingTranscript(meetingId);
     void deleteMeetingGeneration(meetingId);
+    void deleteGenerationVersionsByMeeting(meetingId);
     startedAtRef.current = Date.now();
     accumulatedRef.current = 0;
     setElapsedSec(0);
@@ -1171,7 +1194,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       setConsentOpen(true);
     } else {
       setPendingAudio(null);
-      void persist({ displayStatus: "준비" });
+      void persist({ displayStatus: "검토 필요" }).then(() => {
+        router.push(`/meetings/${meetingId}`);
+      });
     }
   }
 
@@ -1183,7 +1208,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       setConsentOpen(true);
     } else {
       setPendingAudio(null);
-      void persist({ displayStatus: "준비" });
+      void persist({ displayStatus: "검토 필요" }).then(() => {
+        router.push(`/meetings/${meetingId}`);
+      });
     }
   }
 
@@ -1202,7 +1229,9 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     setConsentOpen(false);
     setPendingAudio(null);
     setShowReview(false);
-    void persist({ displayStatus: "준비" });
+    void persist({ displayStatus: "검토 필요" }).then(() => {
+      router.push(`/meetings/${meetingId}`);
+    });
   }
 
   function handleGenerateAi() {
@@ -1223,7 +1252,6 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     setDetailPending(true);
     setSttError(null);
     setShowReview(true);
-    setResultTab("transcript");
 
     try {
       const segments = VIRTUAL_TRANSCRIPT_SEGMENTS.map((segment) => ({
@@ -1251,12 +1279,27 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
 
       await new Promise((resolve) => setTimeout(resolve, 350));
 
-      const detail = VIRTUAL_DETAIL_MINUTES;
-      const detailBody = VIRTUAL_DETAIL_TEXT;
+      const detail = buildVirtualDetailMinutes(meetingId);
+      const detailBody = formatDetailMinutesText(detail);
       setDetailMinutes(detail);
       setDetailText(detailBody);
+      const notes = await getNotesByMeeting(meetingId);
+      const fingerprint = buildGenerationInputFingerprint({
+        segments,
+        notes,
+      });
       await saveMeetingGeneration({
         meetingId,
+        summaryText: summary,
+        detailText: detailBody,
+        detailMinutes: detail,
+        inputFingerprint: fingerprint,
+        source: "mock",
+        preserveAsAiOriginal: true,
+      });
+      await createGenerationVersion({
+        meetingId,
+        kind: "ai_initial",
         summaryText: summary,
         detailText: detailBody,
         detailMinutes: detail,
@@ -1267,30 +1310,18 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           summary.split("\n").find((line) => line.trim()) ?? summary,
         displayStatus: "검토 필요",
       });
+      router.push(`/meetings/${meetingId}`);
     } catch (err) {
       const message =
         err instanceof Error
           ? err.message
           : "미리보기에 실패했습니다. 페이지를 새로고침해 주세요.";
       setSttError(message);
-      setResultTab("transcript");
     } finally {
       setSummaryPending(false);
       setDetailPending(false);
       setPreviewBusy(false);
     }
-  }
-
-  async function handleSaveDetail(next: MeetingDetailMinutes) {
-    const detailBody = formatDetailMinutesText(next);
-    setDetailMinutes(next);
-    setDetailText(detailBody);
-    await saveMeetingGeneration({
-      meetingId,
-      detailText: detailBody,
-      detailMinutes: next,
-      source: generationSource,
-    });
   }
 
   const recordingElapsedSec =
@@ -1685,13 +1716,13 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
               onViewResults={() => {
                 setProcessingActive(false);
                 setShowReview(true);
-                setResultTab("transcript");
+                router.push(`/meetings/${meetingId}`);
               }}
             />
           )}
 
           {showReview && recordingState === "idle" && !processingActive && (
-            <>
+            <section className="glass-panel rounded-[var(--radius)] p-5 sm:p-6">
               {llmError && (
                 <p
                   className="mb-3 rounded-xl bg-[var(--danger)]/10 px-4 py-3 text-sm text-[var(--danger)]"
@@ -1700,70 +1731,50 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                   {llmError}
                 </p>
               )}
-              <MeetingResultTabs
-                activeTab={resultTab}
-                onTabChange={setResultTab}
-                segments={reviewSegments}
-                providerLabel={
-                  reviewSegments[0]?.provider === "mock"
-                    ? "가상 데이터"
-                    : sttProviderLabel(sttProvider)
-                }
-                transcriptPending={sttPending}
-                transcriptError={sttError}
-                diarizationSupported={diarizationSupported}
-                summaryText={summaryText}
-                detailMinutes={detailMinutes}
-                detailText={detailText}
-                summaryPending={summaryPending}
-                detailPending={detailPending}
-                summarySourceLabel={summarySourceLabel}
-                detailSourceLabel={summarySourceLabel}
-                onSaveDetail={handleSaveDetail}
-                onSpeakerChange={(segmentId, speakerLabel) =>
-                  void handleSpeakerChange(segmentId, speakerLabel)
-                }
-                onSeekSegment={(sec) => setSeekToSec(sec)}
-                onRegenerateSummary={() => {
-                  const text = buildFullText(reviewSegments);
-                  if (!text.trim()) return;
-                  setProcessingActive(true);
-                  setProcessingSteps((prev) =>
-                    patchStep(
-                      patchStep(prev, "generate_summary", {
-                        status: "pending",
-                        error: undefined,
-                      }),
-                      "complete",
-                      { status: "pending" },
-                    ),
-                  );
-                  if (processingStartedAt == null) {
-                    setProcessingStartedAt(Date.now());
-                  }
-                  void generateWithLlm(text, "summary");
-                }}
-                onRegenerateDetail={() => {
-                  const text = buildFullText(reviewSegments);
-                  if (!text.trim()) return;
-                  setProcessingActive(true);
-                  setProcessingSteps((prev) =>
-                    patchStep(
-                      patchStep(prev, "generate_minutes", {
-                        status: "pending",
-                        error: undefined,
-                      }),
-                      "complete",
-                      { status: "pending" },
-                    ),
-                  );
-                  if (processingStartedAt == null) {
-                    setProcessingStartedAt(Date.now());
-                  }
-                  void generateWithLlm(text, "detail");
-                }}
-              />
-            </>
+              <h2 className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight">
+                회의록 검토
+              </h2>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                전사문 · 요약 · 상세 · 확정 · 근거 확인은 검토 화면에서
+                진행합니다.
+                {summarySourceLabel ? ` · ${summarySourceLabel}` : ""}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Link
+                  href={`/meetings/${meetingId}`}
+                  className="btn btn-primary px-4 py-2 text-sm"
+                >
+                  회의록 검토하기
+                </Link>
+                {(summaryText || detailMinutes) && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost px-3 py-2 text-sm"
+                    onClick={() => {
+                      const text = buildFullText(reviewSegments);
+                      if (!text.trim()) return;
+                      setProcessingActive(true);
+                      setProcessingSteps((prev) =>
+                        patchStep(
+                          patchStep(prev, "generate_summary", {
+                            status: "pending",
+                            error: undefined,
+                          }),
+                          "complete",
+                          { status: "pending" },
+                        ),
+                      );
+                      if (processingStartedAt == null) {
+                        setProcessingStartedAt(Date.now());
+                      }
+                      void generateWithLlm(text, "both");
+                    }}
+                  >
+                    AI 다시 생성
+                  </button>
+                )}
+              </div>
+            </section>
           )}
 
           <div className="glass-panel rounded-[var(--radius)] p-5 sm:p-6">

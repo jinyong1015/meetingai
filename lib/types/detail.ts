@@ -1,3 +1,5 @@
+import type { EvidenceRef } from "@/lib/types/evidence";
+
 /** Structured detailed meeting minutes matching SCR-04 detail layout. */
 
 export type DetailDiscussionItem = {
@@ -5,16 +7,25 @@ export type DetailDiscussionItem = {
   content: string;
 };
 
+export type DetailDecisionItem = {
+  text: string;
+  evidence?: EvidenceRef | null;
+  /** Marked as needing user confirmation (conflicting / uncertain). */
+  needsReview?: boolean;
+};
+
 export type DetailActionItem = {
   task: string;
   owner: string | null;
   due: string | null;
+  evidence?: EvidenceRef | null;
+  needsReview?: boolean;
 };
 
 export type DetailAgendaItem = {
   title: string;
   discussions: DetailDiscussionItem[];
-  decisions: string[];
+  decisions: DetailDecisionItem[];
   actionItems: DetailActionItem[];
 };
 
@@ -31,6 +42,10 @@ export type MeetingDetailMinutes = {
   nextMeeting: string | null;
   additionalItems: string[];
 };
+
+export function decisionText(item: DetailDecisionItem | string): string {
+  return typeof item === "string" ? item : item.text;
+}
 
 export function formatDetailMinutesText(
   detail: MeetingDetailMinutes,
@@ -55,7 +70,7 @@ export function formatDetailMinutesText(
     });
     if (agenda.decisions.length) {
       lines.push("결정 사항:");
-      agenda.decisions.forEach((item) => lines.push(`- ${item}`));
+      agenda.decisions.forEach((item) => lines.push(`- ${decisionText(item)}`));
     }
     if (agenda.actionItems.length) {
       lines.push("액션 아이템:");
@@ -76,4 +91,19 @@ export function formatDetailMinutesText(
   }
 
   return lines.join("\n").trim();
+}
+
+/** Count items explicitly marked as needing review. */
+export function countNeedsReview(detail: MeetingDetailMinutes | null): number {
+  if (!detail) return 0;
+  let count = 0;
+  for (const agenda of detail.agendas) {
+    for (const decision of agenda.decisions) {
+      if (decision.needsReview) count += 1;
+    }
+    for (const action of agenda.actionItems) {
+      if (action.needsReview) count += 1;
+    }
+  }
+  return count;
 }

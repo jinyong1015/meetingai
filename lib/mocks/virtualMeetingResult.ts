@@ -5,6 +5,7 @@ import type { TranscriptSegment } from "@/lib/types/transcript";
 /**
  * Virtual STT + summary + detail preview data.
  * Detail content mirrors the attached sample minutes document.
+ * Segment ids are stable suffixes; callers prefix with meetingId.
  */
 export const VIRTUAL_TRANSCRIPT_SEGMENTS: TranscriptSegment[] = [
   {
@@ -71,62 +72,105 @@ export const VIRTUAL_SUMMARY_TEXT = `2024년 마케팅 전략회의에서 3분�
 
 다음 회의는 2024년 7월 15일 오전 10시이며, 마케팅 예산 재분배는 추가 논의 사항으로 남겼다.`;
 
-/** Detailed minutes matching the attached sample document. */
-export const VIRTUAL_DETAIL_MINUTES: MeetingDetailMinutes = {
-  documentTitle: "2024년 마케팅 전략회의",
-  meetingTitle: "마케팅 전략 회의",
-  datetime: "2024년 6월 19일, 오전 10시",
-  location: "본사 회의실 3",
-  attendees: ["김팀장", "이대리", "박사원", "최사원"],
-  host: "김팀장",
-  purpose: "3분기 마케팅 전략 수립",
-  agendas: [
-    {
-      title: "2분기 마케팅 성과 리뷰",
-      discussions: [
-        {
-          speaker: null,
-          content: "온라인 광고 캠페인 성과 분석 결과 발표",
-        },
-        {
-          speaker: null,
-          content: "소셜 미디어 인게이지먼트 통계 공유",
-        },
-      ],
-      decisions: ["온라인 광고 예산 10% 증액 결정"],
-      actionItems: [
-        {
-          owner: null,
-          task: "소셜 미디어 전략 재검토",
-          due: "2024년 6월 30일",
-        },
-      ],
-    },
-    {
-      title: "3분기 마케팅 전략 수립",
-      discussions: [
-        {
-          speaker: null,
-          content: "새로운 타겟 시장 조사 결과 발표",
-        },
-        {
-          speaker: null,
-          content: "경쟁사 분석 보고",
-        },
-      ],
-      decisions: ["신규 타겟 시장을 겨냥한 캠페인 실행 결정"],
-      actionItems: [
-        {
-          owner: null,
-          task: "신규 캠페인 기획안 작성",
-          due: "2024년 7월 10일",
-        },
-      ],
-    },
-  ],
-  nextMeeting: "2024년 7월 15일, 오전 10시",
-  additionalItems: ["마케팅 예산 재분배"],
-};
+/** Build virtual detail minutes; pass meetingId to link evidence segment ids. */
+export function buildVirtualDetailMinutes(
+  meetingId?: string,
+): MeetingDetailMinutes {
+  const seg = (suffix: string) =>
+    meetingId ? `${meetingId}-${suffix}` : suffix;
+
+  return {
+    documentTitle: "2024년 마케팅 전략회의",
+    meetingTitle: "마케팅 전략 회의",
+    datetime: "2024년 6월 19일, 오전 10시",
+    location: "본사 회의실 3",
+    attendees: ["김팀장", "이대리", "박사원", "최사원"],
+    host: "김팀장",
+    purpose: "3분기 마케팅 전략 수립",
+    agendas: [
+      {
+        title: "2분기 마케팅 성과 리뷰",
+        discussions: [
+          {
+            speaker: null,
+            content: "온라인 광고 캠페인 성과 분석 결과 발표",
+          },
+          {
+            speaker: null,
+            content: "소셜 미디어 인게이지먼트 통계 공유",
+          },
+        ],
+        decisions: [
+          {
+            text: "온라인 광고 예산 10% 증액 결정",
+            evidence: {
+              kind: "transcript",
+              segmentId: seg("virtual-seg-4"),
+              startTimeSec: 168,
+              endTimeSec: 210,
+            },
+          },
+        ],
+        actionItems: [
+          {
+            owner: null,
+            task: "소셜 미디어 전략 재검토",
+            due: "2024년 6월 30일",
+            evidence: {
+              kind: "transcript",
+              segmentId: seg("virtual-seg-4"),
+              startTimeSec: 168,
+              endTimeSec: 210,
+            },
+          },
+        ],
+      },
+      {
+        title: "3분기 마케팅 전략 수립",
+        discussions: [
+          {
+            speaker: null,
+            content: "새로운 타겟 시장 조사 결과 발표",
+          },
+          {
+            speaker: null,
+            content: "경쟁사 분석 보고",
+          },
+        ],
+        decisions: [
+          {
+            text: "신규 타겟 시장을 겨냥한 캠페인 실행 결정",
+            evidence: {
+              kind: "transcript",
+              segmentId: seg("virtual-seg-6"),
+              startTimeSec: 278,
+              endTimeSec: 330,
+            },
+          },
+        ],
+        actionItems: [
+          {
+            owner: null,
+            task: "신규 캠페인 기획안 작성",
+            due: "2024년 7월 10일",
+            evidence: {
+              kind: "transcript",
+              segmentId: seg("virtual-seg-6"),
+              startTimeSec: 278,
+              endTimeSec: 330,
+            },
+          },
+        ],
+      },
+    ],
+    nextMeeting: "2024년 7월 15일, 오전 10시",
+    additionalItems: ["마케팅 예산 재분배"],
+  };
+}
+
+/** @deprecated Prefer buildVirtualDetailMinutes(meetingId) for evidence links. */
+export const VIRTUAL_DETAIL_MINUTES: MeetingDetailMinutes =
+  buildVirtualDetailMinutes();
 
 export const VIRTUAL_DETAIL_TEXT = formatDetailMinutesText(
   VIRTUAL_DETAIL_MINUTES,

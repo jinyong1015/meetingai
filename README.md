@@ -45,7 +45,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 
 | 구분 | 진행률 | 설명 |
 |---|---:|---|
-| **P0 MVP (출시 필수)** | **약 80%** | SCR-01~03·05 완료. SCR-04는 결과 탭·상세 수정까지(전용 Route·확정 미완). SCR-06 미착수 |
+| **P0 MVP (출시 필수)** | **약 90%** | SCR-01~05 완료(SCR-04 전용 Route·확정·근거·이력 포함). SCR-06 미착수 |
 | P1 (후속) | 0% | 미착수 |
 | P2 / Future | 0% | 미착수 (실시간 전사 포함) |
 
@@ -121,14 +121,15 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [x] 처리 단계 · 경과 시간 · 사용 엔진 UI (`AiProcessingPanel`, 녹음 화면에 임베드)
 - [x] 요약/상세 개별 재생성 (AI-08)
 
-### 7. SCR-04 회의 결과 / 검토 — 약 55%
-- [x] 전사문 · 요약 · 상세 탭 조회 (녹음 화면에 임시 배치)
+### 7. SCR-04 회의 결과 / 검토 — 약 90%
+- [x] 전사문 · 요약 · 상세 탭 조회
 - [x] 요약: 회의 내용 요약 텍스트만 표시
 - [x] 상세: 문서형 회의록 · 사용자 수정 · 저장
-- [x] 원본 음성 재생 · 다운로드 (녹음 화면)
-- [ ] 전용 Route `/meetings/{meetingId}` 분리
-- [ ] 확정 · 버전 관리 · 근거 재생
-- [ ] 이력 · 외부 연동 탭
+- [x] 원본 음성 재생 · 다운로드
+- [x] 전용 Route `/meetings/{meetingId}` 분리
+- [x] 확정 · 버전 관리 · 근거 재생
+- [x] 이력 탭 (보기 · 복원)
+- [ ] 외부 연동 탭 본편 (SCR-06 · 현재 플레이스홀더)
 
 ### 8. SCR-05 설정 — 완료
 - [x] 헤더·녹음 화면 설정 대화상자
@@ -153,7 +154,8 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 |---|---|
 | `/`, `/meetings` | SCR-01 회의 목록 · 검색(전사·AI 포함) · 필터 · cascade 삭제 · 백업 |
 | `/meetings/new` | SCR-02 Step 1 새 회의 생성 (설정 시간대 반영) |
-| `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · **SCR-03 처리 패널** · 결과 탭 |
+| `/meetings/[meetingId]` | **SCR-04** 검토 · 확정 · 근거 · 이력 |
+| `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · **SCR-03 처리 패널** |
 | `app/api/stt/*` | 전사 · 엔진 상태 · AssemblyAI 비동기 jobs |
 | `app/api/generations` | Ollama/OpenAI 요약·상세 (사용자 프롬프트 전달) |
 | `app/api/llm/status` | LLM 엔진 연결 상태 |
@@ -166,7 +168,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 | `lib/llm/*` | Ollama · OpenAI 어댑터 · 프롬프트 · Structured Outputs |
 | `lib/storage/*` | IndexedDB 전체 스토어 (설정·프롬프트 버전 포함) |
 
-**아직 없음:** SCR-04 전용 Route·확정·근거 패널, SCR-06 웹훅, 실시간(Realtime) 전사
+**아직 없음:** SCR-06 웹훅 본편, 실시간(Realtime) 전사
 
 ### 저장 시점 (중요)
 
@@ -242,9 +244,8 @@ STT = Whisper, LLM = Ollama 확인 → 녹음 종료 → AI 동의 → **AI 회�
 
 ## 다음에 할 일 (권장 순서)
 
-1. **SCR-04** 전용 Route `/meetings/{meetingId}` · 확정 · 근거 재생  
-2. **SCR-06** 웹훅 (수신처 · 확정본 전송 · 이력)  
-3. 전사 원문/수정본 분리(AI-04) · 근거 필드 연결(AI-07 UX)
+1. **SCR-06** 웹훅 (수신처 · 확정본 전송 · 이력)
+2. 전사 원문/수정본 분리(AI-04) 고도화 · 근거 필드 LLM 연동(AI-07)
 
 ---
 

@@ -1,4 +1,9 @@
-import type { MeetingDetailMinutes } from "@/lib/types/detail";
+import type { EvidenceRef } from "@/lib/types/evidence";
+import type {
+  DetailActionItem,
+  DetailDecisionItem,
+  MeetingDetailMinutes,
+} from "@/lib/types/detail";
 
 export function parseJsonObject(raw: string): unknown {
   const trimmed = raw.trim();
@@ -41,6 +46,50 @@ export function asNullableString(value: unknown): string | null {
   return null;
 }
 
+function asEvidence(value: unknown): EvidenceRef | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const kind = row.kind === "note" ? "note" : row.kind === "transcript" ? "transcript" : null;
+  if (!kind) return null;
+  return {
+    kind,
+    segmentId: asNullableString(row.segmentId) ?? undefined,
+    noteId: asNullableString(row.noteId) ?? undefined,
+    startTimeSec:
+      typeof row.startTimeSec === "number" ? row.startTimeSec : null,
+    endTimeSec: typeof row.endTimeSec === "number" ? row.endTimeSec : null,
+  };
+}
+
+function asDecision(value: unknown): DetailDecisionItem {
+  if (typeof value === "string") {
+    return { text: value };
+  }
+  if (value && typeof value === "object") {
+    const row = value as Record<string, unknown>;
+    return {
+      text: asString(row.text || row.content || row.decision),
+      evidence: asEvidence(row.evidence),
+      needsReview: row.needsReview === true,
+    };
+  }
+  return { text: "" };
+}
+
+function asActionItem(value: unknown): DetailActionItem {
+  if (value && typeof value === "object") {
+    const row = value as Record<string, unknown>;
+    return {
+      task: asString(row.task),
+      owner: asNullableString(row.owner),
+      due: asNullableString(row.due),
+      evidence: asEvidence(row.evidence),
+      needsReview: row.needsReview === true,
+    };
+  }
+  return { task: "", owner: null, due: null };
+}
+
 export function normalizeDetail(raw: unknown): MeetingDetailMinutes {
   if (!raw || typeof raw !== "object") {
     throw new Error("상세 회의록 형식이 올바르지 않습니다.");
@@ -64,6 +113,7 @@ export function normalizeDetail(raw: unknown): MeetingDetailMinutes {
       const discussions = Array.isArray(item.discussions)
         ? item.discussions
         : [];
+      const decisions = Array.isArray(item.decisions) ? item.decisions : [];
       const actionItems = Array.isArray(item.actionItems)
         ? item.actionItems
         : [];
@@ -77,16 +127,8 @@ export function normalizeDetail(raw: unknown): MeetingDetailMinutes {
             content: asString(row.content),
           };
         }),
-        decisions: asStringArray(item.decisions),
-        actionItems: actionItems.map((a) => {
-          const row =
-            a && typeof a === "object" ? (a as Record<string, unknown>) : {};
-          return {
-            task: asString(row.task),
-            owner: asNullableString(row.owner),
-            due: asNullableString(row.due),
-          };
-        }),
+        decisions: decisions.map(asDecision).filter((d) => d.text.trim()),
+        actionItems: actionItems.map(asActionItem).filter((a) => a.task.trim()),
       };
     }),
     nextMeeting: asNullableString(obj.nextMeeting),

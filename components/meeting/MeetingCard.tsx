@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import type { Meeting } from "@/lib/types/meeting";
+import { meetingHref } from "@/lib/storage/meetings";
 import {
   formatDurationMinutes,
   formatMeetingDateTime,
@@ -45,7 +46,7 @@ export function MeetingCard({ meeting, onDelete, onExport }: MeetingCardProps) {
     <article className="glass-panel relative rounded-[var(--radius)] p-5 sm:p-6">
       <div className="flex items-start gap-3">
         <Link
-          href={`/meetings/${meeting.id}/record`}
+          href={meetingHref(meeting)}
           className="min-w-0 flex-1"
         >
           <h2 className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight">

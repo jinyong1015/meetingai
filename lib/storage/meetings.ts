@@ -3,8 +3,26 @@ import { MEETINGS_STORE, openDb, requestToPromise } from "@/lib/storage/db";
 import { deleteMeetingGeneration } from "@/lib/storage/generations";
 import { deleteNotesByMeeting } from "@/lib/storage/notes";
 import { deleteMeetingTranscript } from "@/lib/storage/transcripts";
-import type { Meeting } from "@/lib/types/meeting";
+import { deleteGenerationVersionsByMeeting } from "@/lib/storage/versions";
+import type { Meeting, MeetingDisplayStatus } from "@/lib/types/meeting";
 import { createId } from "@/lib/utils/format-time";
+
+/** Route a meeting to record (SCR-02/03) or review (SCR-04). */
+export function meetingHref(meeting: {
+  id: string;
+  displayStatus: MeetingDisplayStatus;
+}): string {
+  if (
+    meeting.displayStatus === "준비" ||
+    meeting.displayStatus === "녹음 중" ||
+    meeting.displayStatus === "저장 중" ||
+    meeting.displayStatus === "AI 처리 중" ||
+    meeting.displayStatus === "복구 필요"
+  ) {
+    return `/meetings/${meeting.id}/record`;
+  }
+  return `/meetings/${meeting.id}`;
+}
 
 export function defaultMeetingTitle(date = new Date()): string {
   const year = date.getFullYear();
@@ -91,6 +109,7 @@ export async function deleteMeeting(id: string) {
     deleteNotesByMeeting(id),
     deleteMeetingTranscript(id),
     deleteMeetingGeneration(id),
+    deleteGenerationVersionsByMeeting(id),
     deleteMeetingAudioData(id),
   ]);
   const db = await openDb();
