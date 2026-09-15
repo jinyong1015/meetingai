@@ -4,12 +4,14 @@ type SummaryPanelProps = {
   summaryText: string | null;
   pending?: boolean;
   sourceLabel?: string | null;
+  onRegenerate?: () => void;
 };
 
 export function SummaryPanel({
   summaryText,
   pending = false,
   sourceLabel = null,
+  onRegenerate,
 }: SummaryPanelProps) {
   const text = summaryText?.trim() ?? "";
 
@@ -25,6 +27,15 @@ export function SummaryPanel({
             {sourceLabel ? ` · ${sourceLabel}` : ""}
           </p>
         </div>
+        {onRegenerate && !pending && (
+          <button
+            type="button"
+            className="btn btn-ghost px-3 py-1.5 text-sm"
+            onClick={onRegenerate}
+          >
+            요약만 재생성
+          </button>
+        )}
       </div>
 
       {pending ? (

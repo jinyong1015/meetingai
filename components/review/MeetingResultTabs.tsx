@@ -14,6 +14,7 @@ type MeetingResultTabsProps = {
   providerLabel: string;
   transcriptPending?: boolean;
   transcriptError?: string | null;
+  diarizationSupported?: boolean;
   summaryText: string | null;
   detailMinutes: MeetingDetailMinutes | null;
   detailText?: string | null;
@@ -22,6 +23,10 @@ type MeetingResultTabsProps = {
   summarySourceLabel?: string | null;
   detailSourceLabel?: string | null;
   onSaveDetail?: (next: MeetingDetailMinutes) => Promise<void> | void;
+  onSpeakerChange?: (segmentId: string, speakerLabel: string) => void;
+  onSeekSegment?: (startedAtSec: number) => void;
+  onRegenerateSummary?: () => void;
+  onRegenerateDetail?: () => void;
 };
 
 const TABS: { id: MeetingResultTab; label: string }[] = [
@@ -37,6 +42,7 @@ export function MeetingResultTabs({
   providerLabel,
   transcriptPending = false,
   transcriptError = null,
+  diarizationSupported = false,
   summaryText,
   detailMinutes,
   detailText = null,
@@ -45,6 +51,10 @@ export function MeetingResultTabs({
   summarySourceLabel = null,
   detailSourceLabel = null,
   onSaveDetail,
+  onSpeakerChange,
+  onSeekSegment,
+  onRegenerateSummary,
+  onRegenerateDetail,
 }: MeetingResultTabsProps) {
   return (
     <section
@@ -93,6 +103,7 @@ export function MeetingResultTabs({
             summaryText={summaryText}
             pending={summaryPending}
             sourceLabel={summarySourceLabel}
+            onRegenerate={onRegenerateSummary}
           />
         )}
         {activeTab === "detail" && (
@@ -102,6 +113,7 @@ export function MeetingResultTabs({
             pending={detailPending}
             sourceLabel={detailSourceLabel}
             onSave={onSaveDetail}
+            onRegenerate={onRegenerateDetail}
           />
         )}
         {activeTab === "transcript" && (
@@ -110,6 +122,9 @@ export function MeetingResultTabs({
             providerLabel={providerLabel}
             pending={transcriptPending}
             error={transcriptError}
+            diarizationSupported={diarizationSupported}
+            onSpeakerChange={onSpeakerChange}
+            onSeekSegment={onSeekSegment}
             embedded
           />
         )}

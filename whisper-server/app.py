@@ -122,10 +122,11 @@ async def transcribe(
     response_format: Annotated[str | None, Form()] = None,
 ):
     del model  # local server always uses the loaded model
-    if response_format and response_format not in ("json", "text", ""):
+    fmt = (response_format or "json").strip().lower() or "json"
+    if fmt not in ("json", "text", "verbose_json"):
         raise HTTPException(
             status_code=400,
-            detail="response_format은 json 또는 text만 지원합니다.",
+            detail="response_format은 json, text, verbose_json만 지원합니다.",
         )
 
     payload = await file.read()
@@ -141,17 +142,41 @@ async def transcribe(
 
         whisper = get_model()
         lang = (language or "ko").strip() or "ko"
-        segments, _info = whisper.transcribe(
+        segments_iter, info = whisper.transcribe(
             tmp_path,
             language=lang,
             vad_filter=True,
             beam_size=1,
         )
-        text = "".join(segment.text for segment in segments).strip()
+        segment_rows = []
+        text_parts: list[str] = []
+        for index, segment in enumerate(segments_iter):
+            body = (segment.text or "").strip()
+            if not body:
+                continue
+            text_parts.append(body)
+            segment_rows.append(
+                {
+                    "id": index,
+                    "start": float(segment.start or 0.0),
+                    "end": float(segment.end or segment.start or 0.0),
+                    "text": body,
+                }
+            )
+        text = " ".join(text_parts).strip()
 
-        if response_format == "text":
+        if fmt == "text":
             return JSONResponse(content=text, media_type="text/plain")
-        return {"text": text}
+        if fmt == "verbose_json":
+            return {
+                "task": "transcribe",
+                "language": getattr(info, "language", lang) or lang,
+                "duration": float(getattr(info, "duration", 0.0) or 0.0),
+                "text": text,
+                "segments": segment_rows,
+            }
+        # Default json: include segments for MeetingAI timed display
+        return {"text": text, "segments": segment_rows}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

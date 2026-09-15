@@ -5,6 +5,7 @@ import {
   DEFAULT_APP_SETTINGS,
   SETTINGS_CHANGED_EVENT,
   type AppSettings,
+  type AppTheme,
 } from "@/lib/types/settings";
 
 function isSttProvider(value: unknown): value is SttProvider {
@@ -15,6 +16,60 @@ function isLlmProvider(value: unknown): value is LlmProvider {
   return value === "openai" || value === "ollama";
 }
 
+function isTheme(value: unknown): value is AppTheme {
+  return value === "default";
+}
+
+function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSettings {
+  const browserTz =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : "Asia/Seoul";
+
+  return {
+    id: "app",
+    sttProvider: isSttProvider(raw?.sttProvider)
+      ? raw.sttProvider
+      : DEFAULT_APP_SETTINGS.sttProvider,
+    llmProvider: isLlmProvider(raw?.llmProvider)
+      ? raw.llmProvider
+      : DEFAULT_APP_SETTINGS.llmProvider,
+    timezone:
+      typeof raw?.timezone === "string" && raw.timezone.trim()
+        ? raw.timezone.trim()
+        : browserTz || DEFAULT_APP_SETTINGS.timezone,
+    askAiAfterRecording:
+      typeof raw?.askAiAfterRecording === "boolean"
+        ? raw.askAiAfterRecording
+        : DEFAULT_APP_SETTINGS.askAiAfterRecording,
+    theme: isTheme(raw?.theme) ? raw.theme : DEFAULT_APP_SETTINGS.theme,
+    summaryPrompt:
+      typeof raw?.summaryPrompt === "string" && raw.summaryPrompt.trim()
+        ? raw.summaryPrompt
+        : DEFAULT_APP_SETTINGS.summaryPrompt,
+    detailPrompt:
+      typeof raw?.detailPrompt === "string" && raw.detailPrompt.trim()
+        ? raw.detailPrompt
+        : DEFAULT_APP_SETTINGS.detailPrompt,
+    summaryPromptVersion:
+      typeof raw?.summaryPromptVersion === "number" &&
+      Number.isFinite(raw.summaryPromptVersion) &&
+      raw.summaryPromptVersion >= 1
+        ? Math.floor(raw.summaryPromptVersion)
+        : DEFAULT_APP_SETTINGS.summaryPromptVersion,
+    detailPromptVersion:
+      typeof raw?.detailPromptVersion === "number" &&
+      Number.isFinite(raw.detailPromptVersion) &&
+      raw.detailPromptVersion >= 1
+        ? Math.floor(raw.detailPromptVersion)
+        : DEFAULT_APP_SETTINGS.detailPromptVersion,
+    updatedAt:
+      typeof raw?.updatedAt === "string"
+        ? raw.updatedAt
+        : DEFAULT_APP_SETTINGS.updatedAt,
+  };
+}
+
 export async function getAppSettings(): Promise<AppSettings> {
   const db = await openDb();
   try {
@@ -23,36 +78,23 @@ export async function getAppSettings(): Promise<AppSettings> {
       tx.objectStore(SETTINGS_STORE).get("app"),
     );
     if (!row || typeof row !== "object") {
-      return { ...DEFAULT_APP_SETTINGS };
+      return normalizeSettings(null);
     }
-    const raw = row as Partial<AppSettings>;
-    return {
-      id: "app",
-      sttProvider: isSttProvider(raw.sttProvider)
-        ? raw.sttProvider
-        : DEFAULT_APP_SETTINGS.sttProvider,
-      llmProvider: isLlmProvider(raw.llmProvider)
-        ? raw.llmProvider
-        : DEFAULT_APP_SETTINGS.llmProvider,
-      updatedAt:
-        typeof raw.updatedAt === "string"
-          ? raw.updatedAt
-          : DEFAULT_APP_SETTINGS.updatedAt,
-    };
+    return normalizeSettings(row as Partial<AppSettings>);
   } finally {
     db.close();
   }
 }
 
 export async function saveAppSettings(
-  patch: Pick<AppSettings, "sttProvider" | "llmProvider">,
+  patch: Partial<Omit<AppSettings, "id" | "updatedAt">>,
 ): Promise<AppSettings> {
-  const next: AppSettings = {
-    id: "app",
-    sttProvider: patch.sttProvider,
-    llmProvider: patch.llmProvider,
+  const current = await getAppSettings();
+  const next = normalizeSettings({
+    ...current,
+    ...patch,
     updatedAt: new Date().toISOString(),
-  };
+  });
 
   const db = await openDb();
   try {

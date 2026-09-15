@@ -38,6 +38,8 @@ export async function saveMeetingGeneration(input: {
   detailText?: string | null;
   detailMinutes?: MeetingDetailMinutes | null;
   source: GenerationSource;
+  llmProvider?: string;
+  model?: string;
 }): Promise<MeetingGeneration> {
   const db = await openDb();
   try {
@@ -68,6 +70,11 @@ export async function saveMeetingGeneration(input: {
           ? input.detailMinutes
           : (existing?.detailMinutes ?? null),
       source: input.source,
+      llmProvider:
+        input.llmProvider !== undefined
+          ? input.llmProvider
+          : existing?.llmProvider,
+      model: input.model !== undefined ? input.model : existing?.model,
       updatedAt: new Date().toISOString(),
     };
 

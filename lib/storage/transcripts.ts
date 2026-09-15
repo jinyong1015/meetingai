@@ -3,6 +3,7 @@ import type { SttProvider } from "@/lib/stt/types";
 import {
   buildFullText,
   type MeetingTranscript,
+  type TranscriptJobStatus,
   type TranscriptSegment,
 } from "@/lib/types/transcript";
 
@@ -25,6 +26,10 @@ export async function saveMeetingTranscript(input: {
   meetingId: string;
   segments: TranscriptSegment[];
   provider: SttProvider | string;
+  model?: string;
+  diarizationSupported?: boolean;
+  remoteJobId?: string | null;
+  status?: TranscriptJobStatus;
 }): Promise<MeetingTranscript> {
   const next: MeetingTranscript = {
     meetingId: input.meetingId,
@@ -32,6 +37,10 @@ export async function saveMeetingTranscript(input: {
     provider: input.provider,
     fullText: buildFullText(input.segments),
     updatedAt: new Date().toISOString(),
+    model: input.model,
+    diarizationSupported: input.diarizationSupported,
+    remoteJobId: input.remoteJobId ?? null,
+    status: input.status ?? "completed",
   };
 
   const db = await openDb();

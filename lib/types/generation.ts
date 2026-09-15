@@ -1,3 +1,4 @@
+import type { LlmProvider } from "@/lib/llm/types";
 import type { MeetingDetailMinutes } from "@/lib/types/detail";
 
 export type GenerationSource = "mock" | "llm";
@@ -12,6 +13,8 @@ export type MeetingGeneration = {
   /** Structured detailed minutes for the detail tab. */
   detailMinutes: MeetingDetailMinutes | null;
   source: GenerationSource;
+  llmProvider?: LlmProvider | string;
+  model?: string;
   updatedAt: string;
 };
 

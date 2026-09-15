@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useAppSettings } from "@/lib/hooks/useAppSettings";
 import { createMeeting, defaultMeetingTitle } from "@/lib/storage/meetings";
 
 const TITLE_MAX = 120;
@@ -32,7 +33,9 @@ export function NewMeetingForm() {
   const router = useRouter();
   const now = useRef(new Date());
   const submittingRef = useRef(false);
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const { timezone: settingsTimezone } = useAppSettings();
+  const timezone =
+    settingsTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const [title, setTitle] = useState("");
   const [dateValue, setDateValue] = useState(() => toDateValue(now.current));

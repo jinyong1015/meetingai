@@ -11,6 +11,9 @@ type TranscriptResultPanelProps = {
   error?: string | null;
   /** When true, omit outer glass panel (used inside result tabs). */
   embedded?: boolean;
+  diarizationSupported?: boolean;
+  onSpeakerChange?: (segmentId: string, speakerLabel: string) => void;
+  onSeekSegment?: (startedAtSec: number) => void;
 };
 
 export function TranscriptResultPanel({
@@ -19,8 +22,19 @@ export function TranscriptResultPanel({
   pending = false,
   error = null,
   embedded = false,
+  diarizationSupported = false,
+  onSpeakerChange,
+  onSeekSegment,
 }: TranscriptResultPanelProps) {
-  const fullText = segments.map((segment) => segment.text).join("\n");
+  const fullText = segments
+    .map((segment) => {
+      const speaker = segment.speakerLabel?.trim();
+      const body = segment.text.trim();
+      if (!body) return "";
+      return speaker ? `${speaker}: ${body}` : body;
+    })
+    .filter(Boolean)
+    .join("\n");
 
   const body = (
     <>
@@ -35,6 +49,9 @@ export function TranscriptResultPanel({
           </h2>
           <p className="mt-1 text-xs text-[var(--muted)]">
             녹음이 끝난 뒤 저장된 전사입니다 · {providerLabel}
+            {diarizationSupported
+              ? " · 화자 구분 지원"
+              : " · 화자 구분 미지원(단일 화자)"}
           </p>
         </div>
         <span className="rounded-lg bg-white/60 px-2.5 py-1 text-xs font-medium text-[var(--muted)] ring-1 ring-[var(--border)]">
@@ -53,9 +70,34 @@ export function TranscriptResultPanel({
               key={segment.id}
               className="rounded-xl bg-white/55 px-3 py-2.5 ring-1 ring-[var(--border)]"
             >
-              <p className="font-[family-name:var(--font-mono)] text-xs text-[var(--muted)]">
-                {formatTimestamp(segment.startedAtSec)}
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="font-[family-name:var(--font-mono)] text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                  onClick={() => onSeekSegment?.(segment.startedAtSec)}
+                  title="이 시점으로 이동"
+                >
+                  {formatTimestamp(segment.startedAtSec)}
+                  {segment.endedAtSec != null
+                    ? `–${formatTimestamp(segment.endedAtSec)}`
+                    : ""}
+                </button>
+                {onSpeakerChange ? (
+                  <input
+                    type="text"
+                    aria-label="화자 이름"
+                    className="min-w-[5.5rem] rounded-md bg-white/70 px-2 py-0.5 text-xs font-medium outline-none ring-1 ring-[var(--border)]"
+                    value={segment.speakerLabel ?? "화자 A"}
+                    onChange={(event) =>
+                      onSpeakerChange(segment.id, event.target.value)
+                    }
+                  />
+                ) : (
+                  <span className="text-xs font-medium text-[var(--muted)]">
+                    {segment.speakerLabel ?? "화자 A"}
+                  </span>
+                )}
+              </div>
               <p className="mt-1 text-sm leading-relaxed">{segment.text}</p>
             </div>
           ))}

@@ -13,6 +13,7 @@ type DetailPanelProps = {
   pending?: boolean;
   sourceLabel?: string | null;
   onSave?: (next: MeetingDetailMinutes) => Promise<void> | void;
+  onRegenerate?: () => void;
 };
 
 const fieldClassName =
@@ -214,6 +215,7 @@ export function DetailPanel({
   pending = false,
   sourceLabel = null,
   onSave,
+  onRegenerate,
 }: DetailPanelProps) {
   const fallback = detailText?.trim() ?? "";
   const showStructured =
@@ -284,9 +286,19 @@ export function DetailPanel({
             {sourceLabel ? ` · ${sourceLabel}` : ""}
           </p>
         </div>
-        {showStructured && onSave && !pending && (
+        {(onRegenerate || (showStructured && onSave)) && !pending && (
           <div className="flex flex-wrap items-center gap-2">
-            {editing ? (
+            {onRegenerate && !editing && (
+              <button
+                type="button"
+                onClick={onRegenerate}
+                className="btn btn-ghost px-3 py-1.5 text-sm"
+              >
+                상세만 재생성
+              </button>
+            )}
+            {showStructured && onSave && (
+              editing ? (
               <>
                 <button
                   type="button"
@@ -313,6 +325,7 @@ export function DetailPanel({
               >
                 수정
               </button>
+            )
             )}
           </div>
         )}

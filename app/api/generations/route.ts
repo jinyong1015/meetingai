@@ -28,6 +28,10 @@ type GenerationsBody = {
     timestampSec?: number | null;
     important?: boolean;
   }>;
+  summaryPrompt?: string;
+  detailPrompt?: string;
+  summaryPromptVersion?: number;
+  detailPromptVersion?: number;
 };
 
 function resolveProvider(raw: unknown): LlmProvider {
@@ -89,6 +93,12 @@ export async function POST(request: Request) {
       },
       transcript,
       notes: normalizeNotes(body.notes),
+      summaryPrompt:
+        typeof body.summaryPrompt === "string"
+          ? body.summaryPrompt
+          : undefined,
+      detailPrompt:
+        typeof body.detailPrompt === "string" ? body.detailPrompt : undefined,
     };
 
     const adapter = createLlmAdapter(provider);
@@ -98,10 +108,19 @@ export async function POST(request: Request) {
       summaryText?: string;
       detailMinutes?: unknown;
       detailText?: string;
+      summaryPromptVersion?: number;
+      detailPromptVersion?: number;
       errors?: { summary?: string; detail?: string };
     } = {
       provider,
     };
+
+    if (typeof body.summaryPromptVersion === "number") {
+      result.summaryPromptVersion = body.summaryPromptVersion;
+    }
+    if (typeof body.detailPromptVersion === "number") {
+      result.detailPromptVersion = body.detailPromptVersion;
+    }
 
     if (kind === "summary" || kind === "both") {
       try {
@@ -165,10 +184,14 @@ export async function POST(request: Request) {
 
 export async function GET() {
   const provider = getLlmProvider();
+  const model =
+    provider === "ollama"
+      ? process.env.OLLAMA_MODEL?.trim() || "gemma4:26b"
+      : process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini-2025-04-14";
   return NextResponse.json({
     provider,
     label: llmProviderLabel(provider),
     configured: isLlmProviderConfigured(provider),
-    model: process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini-2025-04-14",
+    model,
   });
 }

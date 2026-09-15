@@ -19,6 +19,9 @@ export type LlmGenerateInput = {
   meeting: LlmMeetingContext;
   transcript: string;
   notes: LlmNoteInput[];
+  /** Optional user prompt override (SET-01). Falls back to defaults. */
+  summaryPrompt?: string;
+  detailPrompt?: string;
 };
 
 export type LlmSummaryResult = {

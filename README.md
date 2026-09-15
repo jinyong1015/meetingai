@@ -1,7 +1,7 @@
 # AI 회의노트
 
 회의 음성을 녹음하고, 메모와 함께 AI 회의록을 만드는 웹 앱입니다.  
-기준 문서: [`docs/prd.md`](docs/prd.md) (v0.3.5), [`docs/화면설계서.md`](docs/화면설계서.md) (v0.8)
+기준 문서: [`docs/prd.md`](docs/prd.md) (v0.3.6), [`docs/화면설계서.md`](docs/화면설계서.md) (v0.9)
 
 ---
 
@@ -13,7 +13,7 @@ STT와 LLM을 각각 로컬·클라우드 중 선택해 사용합니다.
 MeetingAI
 ├── STT (음성 → 텍스트)  … 녹음 종료 · AI 동의 후 처리 (Realtime 미사용)
 │   ├── Whisper      … 로컬 faster-whisper (`whisper-server` · :8080 · OpenAI API 미사용)
-│   └── AssemblyAI   … 클라우드 Pre-recorded (선택)
+│   └── AssemblyAI   … 클라우드 Pre-recorded (선택 · 화자 구분 · 작업 재조회)
 └── LLM (요약 · 상세 회의록)
     ├── Ollama       … 로컬 (`OLLAMA_BASE_URL` · 기본 :11434)
     └── OpenAI       … 클라우드 (`OPENAI_API_KEY`)
@@ -21,10 +21,10 @@ MeetingAI
 
 | 구분 | 옵션 | 처리 위치 | 현재 |
 |---|---|---|---|
-| **STT** | Whisper / AssemblyAI | **로컬 faster-whisper** / 클라우드 | **구현** (동의 후 전사) |
-| **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **구현** (설정에서 선택 · 요약·상세) |
+| **STT** | Whisper / AssemblyAI | **로컬 faster-whisper** / 클라우드 | **구현** (구간 시점 · 화자 · AI-05 재조회) |
+| **LLM** | Ollama / OpenAI | 로컬 / 클라우드 | **구현** (설정 프롬프트 · 요약·상세 · 개별 재생성) |
 
-설정(SCR-05)에서 STT 엔진을 고를 수 있습니다. 기본값은 **Whisper(로컬)** 입니다.
+설정(SCR-05)에서 STT·LLM·일반·프롬프트를 고를 수 있습니다. 기본값은 **Whisper(로컬)** + **Ollama(로컬)** 입니다.
 
 ---
 
@@ -32,12 +32,12 @@ MeetingAI
 
 | 데이터 | 위치 | 설명 |
 |---|---|---|
-| 회의·메모·음성·전사·AI 결과 | **브라우저 IndexedDB** (`meetingai`) | 프로젝트 폴더 파일이 아님. 동일 Chrome·`localhost:3000`에서만 유지 |
+| 회의·메모·음성·전사·AI 결과·설정 | **브라우저 IndexedDB** (`meetingai`) | 프로젝트 폴더 파일이 아님. 동일 Chrome·`localhost:3000`에서만 유지 |
 | Whisper 모델 가중치 | `whisper-server/models/` | PC 디스크. 회의 본문은 여기에 안 남음 |
 | 전사 중 임시 오디오 | OS 임시 폴더 | Whisper 처리 후 삭제 |
 | 비밀키·엔진 URL | `.env.local` (서버 전용) | 브라우저에 노출하지 않음 |
 
-DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `notes` / `audioChunks` / `meetingAudio` / `transcripts` / `generations` 를 확인할 수 있습니다.
+DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `notes` / `audioChunks` / `meetingAudio` / `transcripts` / `generations` / `settings` 를 확인할 수 있습니다.
 
 ---
 
@@ -45,7 +45,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 
 | 구분 | 진행률 | 설명 |
 |---|---:|---|
-| **P0 MVP (출시 필수)** | **약 65%** | SCR-01·02 완료, 로컬 Whisper, 조각 저장·재생·AI 동의·STT·결과 탭 |
+| **P0 MVP (출시 필수)** | **약 80%** | SCR-01~03·05 완료. SCR-04는 결과 탭·상세 수정까지(전용 Route·확정 미완). SCR-06 미착수 |
 | P1 (후속) | 0% | 미착수 |
 | P2 / Future | 0% | 미착수 (실시간 전사 포함) |
 
@@ -72,7 +72,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [x] 저장 공간 표시 · 백업 관리 (회의+메모 JSON)
 - [x] 삭제 시 메모·전사·생성·음성 데이터 cascade 정리
 
-### 3. SCR-02 새 회의 / 녹음 — 완료 (LLM 연결만 후속)
+### 3. SCR-02 새 회의 / 녹음 — 완료
 - [x] 새 회의 생성 폼 (`/meetings/new`) — 제목·일시·참석자·태그
 - [x] **`[회의 시작]` 시에만 IndexedDB 저장**
 - [x] 생성 후 `/meetings/{meetingId}/record` 이동
@@ -91,7 +91,7 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [x] 회의 결과 탭 (**전사문 · 요약 · 상세**, 기본 탭=전사문)
 - [x] 가상 데이터로 요약·상세 미리보기
 - [x] 전사문 · 생성 결과 IndexedDB 저장 · 새로고침 복원
-- [ ] SCR-03 처리 단계 UI
+- [x] SCR-03 처리 단계 UI (경과 시간 · 엔진 · 단계별 재시도)
 
 ### 4. 메모 입력 (NOTE-01~05) — 완료
 - [x] 메모 추가 · 수정 · 삭제
@@ -103,22 +103,23 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [x] IndexedDB 로컬 저장 · 새로고침 복원
 - [x] 시점 클릭 시 실제 음성 위치 이동 (원본 플레이어 연동)
 
-### 5. STT (녹음 종료 · 동의 후) — 약 85%
+### 5. STT (녹음 종료 · 동의 후) — 완료
 - [x] STT 어댑터 인터페이스 (`assemblyai` · `whisper`)
-- [x] AssemblyAI **Pre-recorded** (`universal-2`, `language_code: ko`)
-- [x] **로컬 faster-whisper 서버** (`whisper-server`, OpenAI 호환 `/v1/audio/transcriptions`)
+- [x] AssemblyAI **Pre-recorded** (`universal-2`, `language_code: ko`, `speaker_labels`)
+- [x] **로컬 faster-whisper 서버** (`whisper-server`, OpenAI 호환 `/v1/audio/transcriptions` · 구간 시각)
 - [x] Whisper 어댑터 (`WHISPER_API_URL` → localhost:8080)
-- [x] `POST /api/stt/transcribe` · `GET /api/stt/status`
-- [x] 설정에서 STT 엔진 선택 · 연결 상태 표시
-- [ ] 화자 구분 · 구간별 시점 (AI-03)
-- [ ] SCR-03 처리 단계 UI · 재조회(AI-05)
+- [x] `POST /api/stt/transcribe` · `GET /api/stt/status` · `POST/GET /api/stt/jobs`
+- [x] 설정에서 STT 엔진 선택 · Whisper `/health` 프로브
+- [x] 화자 구분 · 구간별 시점 (AI-03) — AssemblyAI 화자 라벨 · Whisper 시점 구간 · 화자명 수정
+- [x] SCR-03 처리 단계 UI · 재조회(AI-05) — AssemblyAI `remoteJobId` 폴링
 
-### 6. SCR-03 AI 처리 (LLM) — 약 70%
+### 6. SCR-03 AI 처리 (LLM) — 완료
 - [x] LLM 어댑터 (Ollama · OpenAI)
 - [x] 실제 LLM 요약 · 상세 생성 API (`POST /api/generations`)
 - [x] AI 동의 UX (엔진별 로컬/클라우드 전송 안내)
 - [x] 가상 데이터로 요약·상세 결과 미리보기
-- [ ] 처리 단계 · 경과 시간 · 사용 엔진 UI
+- [x] 처리 단계 · 경과 시간 · 사용 엔진 UI (`AiProcessingPanel`, 녹음 화면에 임베드)
+- [x] 요약/상세 개별 재생성 (AI-08)
 
 ### 7. SCR-04 회의 결과 / 검토 — 약 55%
 - [x] 전사문 · 요약 · 상세 탭 조회 (녹음 화면에 임시 배치)
@@ -129,13 +130,16 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 - [ ] 확정 · 버전 관리 · 근거 재생
 - [ ] 이력 · 외부 연동 탭
 
-### 8. SCR-05 설정 — 약 40%
+### 8. SCR-05 설정 — 완료
 - [x] 헤더·녹음 화면 설정 대화상자
 - [x] AI 엔진 탭: **STT** (Whisper · AssemblyAI) · **LLM** (Ollama · OpenAI)
-- [x] 엔진 연결 상태 (키 미노출 · Ollama 연결 프로브)
-- [ ] 일반 설정
-- [ ] AI 프롬프트 관리
+- [x] 엔진 연결 상태 (키 미노출 · Ollama 연결 프로브 · Whisper health)
+- [x] 일반 설정 (시간대 · 녹음 후 AI 안내 · 기본 테마)
+- [x] AI 프롬프트 관리 (요약/상세 · 20~4000자 · 버전 · 기본값 복원 · 샘플 시험)
+- [x] 저장·백업 탭 · 데이터 처리 안내
+- [x] 미저장 변경 닫기 확인
 - [x] 목록 하단 백업·복원
+- [ ] 외부 연동 탭 본편 (SCR-06과 함께)
 
 ### 9. SCR-06 외부 연동 — 0%
 - [ ] 웹훅 수신처 설정
@@ -148,21 +152,21 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 | 경로 | 내용 |
 |---|---|
 | `/`, `/meetings` | SCR-01 회의 목록 · 검색(전사·AI 포함) · 필터 · cascade 삭제 · 백업 |
-| `/meetings/new` | SCR-02 Step 1 새 회의 생성 |
-| `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · 결과 탭 |
-| `app/api/stt/*` | 전사 · 엔진 상태 (서버 전용) |
-| `app/api/generations` | OpenAI 요약·상세 생성 (서버 전용) |
+| `/meetings/new` | SCR-02 Step 1 새 회의 생성 (설정 시간대 반영) |
+| `/meetings/[meetingId]/record` | 녹음 · 메모 · 조각 저장 · 원본 재생 · AI 동의 · STT · **SCR-03 처리 패널** · 결과 탭 |
+| `app/api/stt/*` | 전사 · 엔진 상태 · AssemblyAI 비동기 jobs |
+| `app/api/generations` | Ollama/OpenAI 요약·상세 (사용자 프롬프트 전달) |
 | `app/api/llm/status` | LLM 엔진 연결 상태 |
-| `whisper-server/` | 로컬 faster-whisper (OpenAI API 없음) |
-| `components/recording/*` | RecordMeetingScreen · AudioWaveform · AudioPlayer · AiConsentDialog |
+| `whisper-server/` | 로컬 faster-whisper (구간 `segments` 포함) |
+| `components/recording/*` | RecordMeetingScreen · AiProcessingPanel · AudioPlayer · AiConsentDialog |
 | `components/review/*` | MeetingResultTabs · SummaryPanel · DetailPanel |
-| `components/settings/*` | SettingsDialog (STT 선택 · OpenAI 상태) |
+| `components/settings/*` | SettingsDialog (일반 · 엔진 · 프롬프트 · 백업 · 안내) |
 | `lib/hooks/useMicAnalyser` | 장치 선택 · AnalyserNode · `voiceActive` |
-| `lib/stt/*` | AssemblyAI · Whisper 어댑터 |
+| `lib/stt/*` | AssemblyAI · Whisper 어댑터 · 구간 매핑 |
 | `lib/llm/*` | Ollama · OpenAI 어댑터 · 프롬프트 · Structured Outputs |
-| `lib/storage/*` | IndexedDB 전체 스토어 |
+| `lib/storage/*` | IndexedDB 전체 스토어 (설정·프롬프트 버전 포함) |
 
-**아직 없음:** SCR-03 처리 단계 UI, SCR-04 전용 Route·확정·웹훅, 실시간(Realtime) 전사
+**아직 없음:** SCR-04 전용 Route·확정·근거 패널, SCR-06 웹훅, 실시간(Realtime) 전사
 
 ### 저장 시점 (중요)
 
@@ -171,9 +175,10 @@ DevTools → Application → IndexedDB → `meetingai` 에서 `meetings` / `note
 | `/meetings/new` 열기만 하고 취소·목록으로 복귀 | 아니오 |
 | `[회의 시작]` 클릭 | 예 (`meetings`) |
 | 녹음 중 | 예 (`audioChunks` · 약 5초) |
-| 녹음 종료 후 `[음성만 저장]` | 예 (`meetingAudio` · STT 없음) |
+| 녹음 종료 후 `[음성만 저장]` / AI 안내 off | 예 (`meetingAudio` · STT 없음) |
 | 녹음 종료 후 `[AI 회의록 생성]` · STT 완료 | 예 (`transcripts`) |
 | OpenAI/Ollama 요약·상세 완료 / 가상 미리보기 / 상세 수정 저장 | 예 (`generations` · `summaryPreview`) |
+| 설정 저장 | 예 (`settings`) |
 
 ---
 
@@ -237,9 +242,9 @@ STT = Whisper, LLM = Ollama 확인 → 녹음 종료 → AI 동의 → **AI 회�
 
 ## 다음에 할 일 (권장 순서)
 
-1. **SCR-03** 처리 단계 UI  
-2. **SCR-04** 전용 Route · 확정 · **SCR-06** 웹훅  
-3. SCR-05 일반 설정 · 프롬프트 본편
+1. **SCR-04** 전용 Route `/meetings/{meetingId}` · 확정 · 근거 재생  
+2. **SCR-06** 웹훅 (수신처 · 확정본 전송 · 이력)  
+3. 전사 원문/수정본 분리(AI-04) · 근거 필드 연결(AI-07 UX)
 
 ---
 
@@ -247,6 +252,6 @@ STT = Whisper, LLM = Ollama 확인 → 녹음 종료 → AI 동의 → **AI 회�
 
 | 문서 | 설명 |
 |---|---|
-| [docs/prd.md](docs/prd.md) | 제품 요구사항 (v0.3.5) |
-| [docs/화면설계서.md](docs/화면설계서.md) | 화면별 UI/UX · AC · 구현 현황 (v0.8) |
+| [docs/prd.md](docs/prd.md) | 제품 요구사항 (v0.3.6) |
+| [docs/화면설계서.md](docs/화면설계서.md) | 화면별 UI/UX · AC · 구현 현황 (v0.9) |
 | [whisper-server/README.md](whisper-server/README.md) | 로컬 Whisper 설치·실행 |

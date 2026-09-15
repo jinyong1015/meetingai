@@ -6,10 +6,17 @@ import Link from "next/link";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { NoteSection } from "@/components/note/NoteSection";
 import { AiConsentDialog } from "@/components/recording/AiConsentDialog";
+import { AiProcessingPanel } from "@/components/recording/AiProcessingPanel";
 import { AudioPlayer } from "@/components/recording/AudioPlayer";
 import { AudioWaveform } from "@/components/recording/AudioWaveform";
 import { MeetingResultTabs } from "@/components/review/MeetingResultTabs";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
+import {
+  createInitialProcessingSteps,
+  patchStep,
+  type AiProcessingStep,
+  type AiProcessingStepId,
+} from "@/lib/ai/processing";
 import { useAppSettings } from "@/lib/hooks/useAppSettings";
 import { useMeetingRecorder } from "@/lib/hooks/useMeetingRecorder";
 import {
@@ -40,13 +47,18 @@ import {
   getMeetingTranscript,
   saveMeetingTranscript,
 } from "@/lib/storage/transcripts";
+import { mapSttSegmentsToTranscript } from "@/lib/stt/mapSegments";
+import type { SttSegmentResult } from "@/lib/stt/types";
 import type { MeetingAudio } from "@/lib/types/audio";
 import type { MeetingDetailMinutes } from "@/lib/types/detail";
 import { formatDetailMinutesText } from "@/lib/types/detail";
 import type { MeetingResultTab } from "@/lib/types/generation";
 import type { Meeting } from "@/lib/types/meeting";
 import { sttProviderLabel, llmProviderLabel } from "@/lib/types/settings";
-import type { TranscriptSegment } from "@/lib/types/transcript";
+import {
+  buildFullText,
+  type TranscriptSegment,
+} from "@/lib/types/transcript";
 import { createId, formatTimestamp } from "@/lib/utils/format-time";
 
 type RecordingState = "idle" | "recording" | "paused";
@@ -96,6 +108,15 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const [showReview, setShowReview] = useState(false);
   const [sttPending, setSttPending] = useState(false);
   const [sttError, setSttError] = useState<string | null>(null);
+  const [diarizationSupported, setDiarizationSupported] = useState(false);
+  const [processingActive, setProcessingActive] = useState(false);
+  const [processingSteps, setProcessingSteps] = useState<AiProcessingStep[]>(
+    () => createInitialProcessingSteps("whisper"),
+  );
+  const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(
+    null,
+  );
+  const [processingTickMs, setProcessingTickMs] = useState(0);
   const [resultTab, setResultTab] = useState<MeetingResultTab>("transcript");
   const [summaryText, setSummaryText] = useState<string | null>(null);
   const [detailText, setDetailText] = useState<string | null>(null);
@@ -135,8 +156,37 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
   const sessionIdRef = useRef<string | null>(null);
   const lastChunkSavedAtRef = useRef<string | null>(null);
   const chunkPersistErrorRef = useRef(false);
+  const stepStartedAtRef = useRef<Partial<Record<AiProcessingStepId, number>>>(
+    {},
+  );
+  const processingStepsRef = useRef(processingSteps);
+  const reviewSegmentsRef = useRef(reviewSegments);
 
-  const { sttProvider, llmProvider } = useAppSettings();
+  const {
+    sttProvider,
+    llmProvider,
+    askAiAfterRecording,
+    summaryPrompt,
+    detailPrompt,
+    summaryPromptVersion,
+    detailPromptVersion,
+  } = useAppSettings();
+  const settingsRef = useRef({
+    askAiAfterRecording,
+    summaryPrompt,
+    detailPrompt,
+    summaryPromptVersion,
+    detailPromptVersion,
+  });
+  settingsRef.current = {
+    askAiAfterRecording,
+    summaryPrompt,
+    detailPrompt,
+    summaryPromptVersion,
+    detailPromptVersion,
+  };
+  processingStepsRef.current = processingSteps;
+  reviewSegmentsRef.current = reviewSegments;
   const {
     start: startRecorder,
     pause: pauseRecorder,
@@ -163,6 +213,64 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
 
   recordingStateRef.current = recordingState;
   titleRef.current = title;
+
+  function beginStep(id: AiProcessingStepId, detail?: string) {
+    stepStartedAtRef.current[id] = Date.now();
+    setProcessingSteps((prev) =>
+      patchStep(prev, id, {
+        status: "running",
+        detail,
+        error: undefined,
+      }),
+    );
+  }
+
+  function finishStep(
+    id: AiProcessingStepId,
+    status: "success" | "failed" | "skipped",
+    detail?: string,
+    error?: string,
+  ) {
+    const started = stepStartedAtRef.current[id];
+    const elapsed =
+      started != null ? Math.max(0, Date.now() - started) : 0;
+    setProcessingSteps((prev) => {
+      const current = prev.find((step) => step.id === id);
+      return patchStep(prev, id, {
+        status,
+        elapsedMs: (current?.elapsedMs ?? 0) + elapsed,
+        detail,
+        error,
+      });
+    });
+    delete stepStartedAtRef.current[id];
+  }
+
+  function startProcessingPipeline() {
+    const steps = createInitialProcessingSteps(sttProvider);
+    setProcessingSteps(steps);
+    setProcessingActive(true);
+    setProcessingStartedAt(Date.now());
+    setProcessingTickMs(0);
+    setShowReview(false);
+    stepStartedAtRef.current = {};
+  }
+
+  useEffect(() => {
+    if (!processingActive || processingStartedAt == null) return;
+    const timer = setInterval(() => {
+      setProcessingTickMs(Date.now() - processingStartedAt);
+      setProcessingSteps((prev) =>
+        prev.map((step) => {
+          if (step.status !== "running") return step;
+          const started = stepStartedAtRef.current[step.id];
+          if (started == null) return step;
+          return { ...step, elapsedMs: Date.now() - started };
+        }),
+      );
+    }, 250);
+    return () => clearInterval(timer);
+  }, [processingActive, processingStartedAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,9 +323,15 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         setSummarySourceLabel(
           generation.source === "mock"
             ? "가상 데이터 미리보기"
-            : llmProviderLabel(llmProvider),
+            : generation.model
+              ? `${llmProviderLabel(llmProvider)} · ${generation.model}`
+              : llmProviderLabel(llmProvider),
         );
         setGenerationSource(generation.source);
+      }
+      if (transcript?.segments?.length) {
+        setReviewSegments(transcript.segments);
+        setDiarizationSupported(Boolean(transcript.diarizationSupported));
       }
       if (
         transcript?.segments?.length ||
@@ -225,9 +339,87 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         generation?.detailMinutes ||
         generation?.detailText
       ) {
-        setReviewSegments(transcript?.segments ?? []);
         setShowReview(true);
         setResultTab("transcript");
+      }
+
+      // AI-05: resume pending AssemblyAI job without creating a new request
+      if (
+        transcript?.status === "pending" &&
+        transcript.remoteJobId &&
+        transcript.provider === "assemblyai"
+      ) {
+        setProcessingActive(true);
+        setProcessingSteps(createInitialProcessingSteps("assemblyai"));
+        setProcessingStartedAt(Date.now());
+        beginStep("transcribe", "기존 전사 작업 재조회");
+        setSttPending(true);
+        void (async () => {
+          try {
+            const res = await fetch(
+              `/api/stt/jobs/${encodeURIComponent(transcript.remoteJobId!)}?provider=assemblyai`,
+              { cache: "no-store" },
+            );
+            const data = (await res.json()) as {
+              status?: string;
+              text?: string;
+              segments?: SttSegmentResult[];
+              diarizationSupported?: boolean;
+              model?: string;
+              error?: string;
+            };
+            if (cancelled) return;
+            if (!res.ok || data.status === "error") {
+              throw new Error(data.error || "기존 전사 작업 조회에 실패했습니다.");
+            }
+            if (data.status === "completed") {
+              const segments = mapSttSegmentsToTranscript(
+                meetingId,
+                "assemblyai",
+                data.segments ?? [],
+              );
+              setReviewSegments(segments);
+              setDiarizationSupported(Boolean(data.diarizationSupported));
+              await saveMeetingTranscript({
+                meetingId,
+                segments,
+                provider: "assemblyai",
+                model: data.model,
+                diarizationSupported: Boolean(data.diarizationSupported),
+                remoteJobId: transcript.remoteJobId,
+                status: "completed",
+              });
+              finishStep("transcribe", "success", "기존 전사 사용");
+              setSttPending(false);
+              const text = buildFullText(segments);
+              if (text) await generateWithLlm(text, "both");
+              else {
+                setProcessingActive(false);
+                setShowReview(true);
+              }
+            } else {
+              // still processing — keep polling lightly
+              finishStep(
+                "transcribe",
+                "failed",
+                undefined,
+                "전사가 아직 완료되지 않았습니다. 잠시 후 다시 시도하세요.",
+              );
+              setSttPending(false);
+              setShowReview(true);
+            }
+          } catch (err) {
+            if (cancelled) return;
+            const message =
+              err instanceof Error
+                ? err.message
+                : "기존 전사 작업 조회에 실패했습니다.";
+            setSttError(message);
+            finishStep("transcribe", "failed", undefined, message);
+            setSttPending(false);
+            setShowReview(true);
+          }
+        })();
       }
       if (playable?.audio) {
         let audio = playable.audio;
@@ -388,20 +580,39 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     }
   }
 
-  async function generateWithLlm(transcriptText: string) {
+  async function generateWithLlm(
+    transcriptText: string,
+    kind: "summary" | "detail" | "both" = "both",
+  ) {
     if (!llmConfigured) {
-      setLlmError(
-        `${llmProviderLabel(llmProvider)}에 연결할 수 없어 요약·상세를 생성하지 않았습니다. 설정과 .env.local을 확인한 뒤 개발 서버를 다시 시작하세요.`,
-      );
+      const message = `${llmProviderLabel(llmProvider)}에 연결할 수 없어 요약·상세를 생성하지 않았습니다. 설정과 .env.local을 확인한 뒤 개발 서버를 다시 시작하세요.`;
+      setLlmError(message);
+      if (kind === "summary" || kind === "both") {
+        finishStep("generate_summary", "failed", undefined, message);
+      }
+      if (kind === "detail" || kind === "both") {
+        finishStep("generate_minutes", "failed", undefined, message);
+      }
+      setProcessingActive(false);
+      setShowReview(true);
       return;
     }
 
     setLlmError(null);
-    setSummaryPending(true);
-    setDetailPending(true);
-    setSummarySourceLabel(null);
     setGenerationSource("llm");
     void persist({ displayStatus: "AI 처리 중" });
+
+    const runSummary = kind === "summary" || kind === "both";
+    const runDetail = kind === "detail" || kind === "both";
+
+    if (runSummary) {
+      setSummaryPending(true);
+      beginStep("generate_summary", llmProviderLabel(llmProvider));
+    }
+    if (runDetail) {
+      setDetailPending(true);
+      beginStep("generate_minutes", llmProviderLabel(llmProvider));
+    }
 
     try {
       const notes = await getNotesByMeeting(meetingId);
@@ -413,11 +624,12 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           important: note.important,
         }));
 
+      const prompts = settingsRef.current;
       const res = await fetch("/api/generations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "both",
+          kind,
           provider: llmProvider,
           meeting: {
             title: titleRef.current,
@@ -427,6 +639,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
           },
           transcript: transcriptText,
           notes: aiNotes,
+          summaryPrompt: prompts.summaryPrompt,
+          detailPrompt: prompts.detailPrompt,
+          summaryPromptVersion: prompts.summaryPromptVersion,
+          detailPromptVersion: prompts.detailPromptVersion,
         }),
       });
 
@@ -448,28 +664,57 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       const detailBody = data.detailText?.trim() || null;
       const detail = data.detailMinutes ?? null;
       const engineLabel = llmProviderLabel(llmProvider);
+      const sourceLabel = data.model
+        ? `${engineLabel} · ${data.model}`
+        : engineLabel;
 
-      if (summary) {
-        setSummaryText(summary);
-        setSummarySourceLabel(
-          data.model ? `${engineLabel} · ${data.model}` : engineLabel,
-        );
+      if (runSummary) {
+        if (summary) {
+          setSummaryText(summary);
+          setSummarySourceLabel(sourceLabel);
+          finishStep(
+            "generate_summary",
+            "success",
+            data.model ? data.model : engineLabel,
+          );
+        } else {
+          const err =
+            data.errors?.summary || data.error || "요약 생성에 실패했습니다.";
+          finishStep("generate_summary", "failed", undefined, err);
+          setLlmError(err);
+        }
+        setSummaryPending(false);
       }
-      setSummaryPending(false);
 
-      if (detail && detailBody) {
-        setDetailMinutes(detail);
-        setDetailText(detailBody);
+      if (runDetail) {
+        if (detail && detailBody) {
+          setDetailMinutes(detail);
+          setDetailText(detailBody);
+          finishStep(
+            "generate_minutes",
+            "success",
+            data.model ? data.model : engineLabel,
+          );
+        } else {
+          const err =
+            data.errors?.detail ||
+            data.error ||
+            "상세 회의록 생성에 실패했습니다.";
+          finishStep("generate_minutes", "failed", undefined, err);
+          setLlmError((prev) => (prev ? `${prev} · ${err}` : err));
+        }
+        setDetailPending(false);
       }
-      setDetailPending(false);
 
       if (summary || detailBody || detail) {
         await saveMeetingGeneration({
           meetingId,
-          summaryText: summary,
-          detailText: detailBody,
-          detailMinutes: detail,
+          summaryText: runSummary ? summary : undefined,
+          detailText: runDetail ? detailBody : undefined,
+          detailMinutes: runDetail ? detail : undefined,
           source: "llm",
+          llmProvider,
+          model: data.model,
         });
       }
 
@@ -483,24 +728,29 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         await persist({ displayStatus: "검토 필요" });
       }
 
-      const partialErrors = [
-        data.errors?.summary,
-        data.errors?.detail,
-        !res.ok ? data.error : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      if (partialErrors) {
-        setLlmError(partialErrors);
+      const hasFailure =
+        (runSummary && !summary) || (runDetail && !(detail && detailBody));
+      if (!hasFailure) {
+        finishStep("complete", "success");
+        setProcessingActive(false);
+        setShowReview(true);
+        if (summary) setResultTab("summary");
+        else if (detail) setResultTab("detail");
+      } else {
+        setShowReview(true);
       }
-
-      if (summary) setResultTab("summary");
-      else if (detail) setResultTab("detail");
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "회의록 생성에 실패했습니다.";
       setLlmError(message);
+      if (runSummary) {
+        finishStep("generate_summary", "failed", undefined, message);
+      }
+      if (runDetail) {
+        finishStep("generate_minutes", "failed", undefined, message);
+      }
       await persist({ displayStatus: "처리 실패" });
+      setShowReview(true);
     } finally {
       setSummaryPending(false);
       setDetailPending(false);
@@ -511,11 +761,135 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
     blob: Blob;
     mimeType: string;
   }) {
+    startProcessingPipeline();
+    beginStep(
+      "upload_audio",
+      sttProvider === "whisper" ? "로컬 파일 준비" : "클라우드 업로드",
+    );
     setSttPending(true);
     setSttError(null);
     setLlmError(null);
     void persist({ displayStatus: "AI 처리 중" });
+
     try {
+      // Mark upload/prep quickly — actual bytes progress is only for measured uploads
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      finishStep(
+        "upload_audio",
+        "success",
+        sttProvider === "whisper"
+          ? "로컬 입력 준비 완료"
+          : `${(audio.blob.size / (1024 * 1024)).toFixed(1)} MiB`,
+      );
+
+      beginStep("transcribe", sttProviderLabel(sttProvider));
+
+      if (sttProvider === "assemblyai") {
+        const startForm = new FormData();
+        const filename = `meeting.${extensionForMime(audio.mimeType)}`;
+        startForm.append("audio", audio.blob, filename);
+        startForm.append("language", "ko");
+        startForm.append("provider", "assemblyai");
+
+        const startRes = await fetch("/api/stt/jobs", {
+          method: "POST",
+          body: startForm,
+        });
+        const started = (await startRes.json()) as {
+          remoteJobId?: string;
+          model?: string;
+          error?: string;
+        };
+        if (!startRes.ok || !started.remoteJobId) {
+          throw new Error(started.error || "전사 작업 시작에 실패했습니다.");
+        }
+
+        await saveMeetingTranscript({
+          meetingId,
+          segments: [],
+          provider: "assemblyai",
+          model: started.model,
+          remoteJobId: started.remoteJobId,
+          status: "pending",
+          diarizationSupported: false,
+        });
+
+        const deadline = Date.now() + 90_000;
+        type PollPayload = {
+          status?: string;
+          text?: string;
+          segments?: SttSegmentResult[];
+          diarizationSupported?: boolean;
+          model?: string;
+          remoteJobId?: string | null;
+          error?: string;
+        };
+        let data: PollPayload | null = null;
+
+        while (Date.now() < deadline) {
+          const pollRes = await fetch(
+            `/api/stt/jobs/${encodeURIComponent(started.remoteJobId)}?provider=assemblyai`,
+            { cache: "no-store" },
+          );
+          data = (await pollRes.json()) as PollPayload;
+          if (!pollRes.ok) {
+            throw new Error(data.error || "전사 상태 조회에 실패했습니다.");
+          }
+          if (data.status === "completed") break;
+          if (data.status === "error") {
+            throw new Error(data.error || "AssemblyAI 전사에 실패했습니다.");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        if (!data || data.status !== "completed") {
+          throw new Error("AssemblyAI 전사 대기 시간이 초과되었습니다.");
+        }
+
+        const segments = mapSttSegmentsToTranscript(
+          meetingId,
+          "assemblyai",
+          data.segments ?? [],
+        );
+        setReviewSegments(segments);
+        setDiarizationSupported(Boolean(data.diarizationSupported));
+        await saveMeetingTranscript({
+          meetingId,
+          segments,
+          provider: "assemblyai",
+          model: data.model ?? started.model,
+          diarizationSupported: Boolean(data.diarizationSupported),
+          remoteJobId: started.remoteJobId,
+          status: "completed",
+        });
+
+        finishStep(
+          "transcribe",
+          "success",
+          data.diarizationSupported
+            ? `${segments.length}개 구간 · 화자 구분`
+            : `${segments.length}개 구간`,
+        );
+        setSttPending(false);
+
+        const text = buildFullText(segments);
+        if (!text) {
+          setLlmError(
+            "전사 결과가 비어 있어 요약·상세를 생성하지 않았습니다.",
+          );
+          finishStep("generate_summary", "skipped", "전사 결과 없음");
+          finishStep("generate_minutes", "skipped", "전사 결과 없음");
+          finishStep("complete", "failed", undefined, "전사 결과 없음");
+          setProcessingActive(false);
+          setShowReview(true);
+          await persist({ displayStatus: "검토 필요" });
+          return;
+        }
+
+        await generateWithLlm(text, "both");
+        return;
+      }
+
       const form = new FormData();
       const filename = `meeting.${extensionForMime(audio.mimeType)}`;
       form.append("audio", audio.blob, filename);
@@ -529,6 +903,10 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       const data = (await res.json()) as {
         text?: string;
         provider?: string;
+        model?: string;
+        segments?: SttSegmentResult[];
+        diarizationSupported?: boolean;
+        remoteJobId?: string | null;
         error?: string;
       };
 
@@ -536,45 +914,119 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         throw new Error(data.error || "음성 인식에 실패했습니다.");
       }
 
-      const text = (data.text ?? "").trim();
-      const segments: TranscriptSegment[] = text
-        ? [
-            {
-              id: `${meetingId}-full`,
-              text,
-              startedAtSec: 0,
-              provider: data.provider ?? sttProvider,
-            },
-          ]
-        : [];
+      const provider = data.provider ?? sttProvider;
+      const segments = mapSttSegmentsToTranscript(
+        meetingId,
+        provider,
+        data.segments?.length
+          ? data.segments
+          : data.text?.trim()
+            ? [
+                {
+                  id: `${meetingId}-full`,
+                  text: data.text.trim(),
+                  startedAtSec: 0,
+                  speakerLabel: "화자 A",
+                  originalSpeakerLabel: "A",
+                },
+              ]
+            : [],
+      );
 
       setReviewSegments(segments);
-      setShowReview(true);
+      setDiarizationSupported(Boolean(data.diarizationSupported));
       await saveMeetingTranscript({
         meetingId,
         segments,
-        provider: data.provider ?? sttProvider,
+        provider,
+        model: data.model,
+        diarizationSupported: Boolean(data.diarizationSupported),
+        remoteJobId: data.remoteJobId ?? null,
+        status: "completed",
       });
 
+      finishStep(
+        "transcribe",
+        "success",
+        data.diarizationSupported
+          ? `${segments.length}개 구간 · 화자 구분`
+          : `${segments.length}개 구간`,
+      );
+      setSttPending(false);
+
+      const text = buildFullText(segments);
       if (!text) {
         setLlmError(
           "전사 결과가 비어 있어 요약·상세를 생성하지 않았습니다.",
         );
+        finishStep(
+          "generate_summary",
+          "skipped",
+          "전사 결과 없음",
+        );
+        finishStep(
+          "generate_minutes",
+          "skipped",
+          "전사 결과 없음",
+        );
+        finishStep("complete", "failed", undefined, "전사 결과 없음");
+        setProcessingActive(false);
+        setShowReview(true);
         await persist({ displayStatus: "검토 필요" });
         return;
       }
 
-      setSttPending(false);
-      await generateWithLlm(text);
+      await generateWithLlm(text, "both");
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "음성 인식에 실패했습니다.";
       setSttError(message);
+      finishStep("transcribe", "failed", undefined, message);
       setShowReview(true);
       await persist({ displayStatus: "처리 실패" });
     } finally {
       setSttPending(false);
     }
+  }
+
+  async function handleRetryStep(stepId: AiProcessingStepId) {
+    if (stepId === "transcribe") {
+      const audio = pendingAudio ?? savedAudio;
+      if (!audio) {
+        setSttError("저장된 음성을 찾지 못했습니다.");
+        return;
+      }
+      void transcribeRecording(audio);
+      return;
+    }
+
+    const transcriptText = buildFullText(reviewSegmentsRef.current);
+    if (!transcriptText.trim()) {
+      setLlmError("전사가 없어 재생성할 수 없습니다.");
+      return;
+    }
+
+    setProcessingActive(true);
+    if (processingStartedAt == null) setProcessingStartedAt(Date.now());
+    if (stepId === "generate_summary") {
+      await generateWithLlm(transcriptText, "summary");
+    } else if (stepId === "generate_minutes") {
+      await generateWithLlm(transcriptText, "detail");
+    }
+  }
+
+  async function handleSpeakerChange(segmentId: string, speakerLabel: string) {
+    const next = reviewSegmentsRef.current.map((segment) =>
+      segment.id === segmentId ? { ...segment, speakerLabel } : segment,
+    );
+    setReviewSegments(next);
+    await saveMeetingTranscript({
+      meetingId,
+      segments: next,
+      provider: next[0]?.provider ?? sttProvider,
+      diarizationSupported,
+      status: "completed",
+    });
   }
 
   async function ensureMic(deviceId?: string | null) {
@@ -715,13 +1167,24 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       return;
     }
 
-    setConsentOpen(true);
+    if (settingsRef.current.askAiAfterRecording) {
+      setConsentOpen(true);
+    } else {
+      setPendingAudio(null);
+      void persist({ displayStatus: "준비" });
+    }
   }
 
   async function retrySaveAudio() {
     if (!pendingAudio) return;
     const saved = await persistFinalAudio(pendingAudio);
-    if (saved) setConsentOpen(true);
+    if (!saved) return;
+    if (settingsRef.current.askAiAfterRecording) {
+      setConsentOpen(true);
+    } else {
+      setPendingAudio(null);
+      void persist({ displayStatus: "준비" });
+    }
   }
 
   function downloadPendingOrSavedAudio() {
@@ -769,10 +1232,13 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
       }));
 
       setReviewSegments(segments);
+      setDiarizationSupported(true);
       await saveMeetingTranscript({
         meetingId,
         segments,
         provider: "mock",
+        diarizationSupported: true,
+        status: "completed",
       });
 
       await new Promise((resolve) => setTimeout(resolve, 350));
@@ -1184,7 +1650,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
             <h2 className="font-[family-name:var(--font-display)] text-sm font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
               원본 음성
             </h2>
-            {!showReview && !sttPending && (
+            {!showReview && !sttPending && !processingActive && (
               <button
                 type="button"
                 className="btn btn-ghost px-3 py-1.5 text-sm"
@@ -1209,7 +1675,22 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
         style={{ animationDelay: "80ms" }}
       >
         <div className="flex min-w-0 flex-col gap-6">
-          {showReview && recordingState === "idle" && (
+          {processingActive && recordingState === "idle" && (
+            <AiProcessingPanel
+              steps={processingSteps}
+              sttProvider={sttProvider}
+              llmProvider={llmProvider}
+              totalElapsedMs={processingTickMs}
+              onRetryStep={(stepId) => void handleRetryStep(stepId)}
+              onViewResults={() => {
+                setProcessingActive(false);
+                setShowReview(true);
+                setResultTab("transcript");
+              }}
+            />
+          )}
+
+          {showReview && recordingState === "idle" && !processingActive && (
             <>
               {llmError && (
                 <p
@@ -1230,6 +1711,7 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                 }
                 transcriptPending={sttPending}
                 transcriptError={sttError}
+                diarizationSupported={diarizationSupported}
                 summaryText={summaryText}
                 detailMinutes={detailMinutes}
                 detailText={detailText}
@@ -1238,6 +1720,48 @@ export function RecordMeetingScreen({ meetingId }: RecordMeetingScreenProps) {
                 summarySourceLabel={summarySourceLabel}
                 detailSourceLabel={summarySourceLabel}
                 onSaveDetail={handleSaveDetail}
+                onSpeakerChange={(segmentId, speakerLabel) =>
+                  void handleSpeakerChange(segmentId, speakerLabel)
+                }
+                onSeekSegment={(sec) => setSeekToSec(sec)}
+                onRegenerateSummary={() => {
+                  const text = buildFullText(reviewSegments);
+                  if (!text.trim()) return;
+                  setProcessingActive(true);
+                  setProcessingSteps((prev) =>
+                    patchStep(
+                      patchStep(prev, "generate_summary", {
+                        status: "pending",
+                        error: undefined,
+                      }),
+                      "complete",
+                      { status: "pending" },
+                    ),
+                  );
+                  if (processingStartedAt == null) {
+                    setProcessingStartedAt(Date.now());
+                  }
+                  void generateWithLlm(text, "summary");
+                }}
+                onRegenerateDetail={() => {
+                  const text = buildFullText(reviewSegments);
+                  if (!text.trim()) return;
+                  setProcessingActive(true);
+                  setProcessingSteps((prev) =>
+                    patchStep(
+                      patchStep(prev, "generate_minutes", {
+                        status: "pending",
+                        error: undefined,
+                      }),
+                      "complete",
+                      { status: "pending" },
+                    ),
+                  );
+                  if (processingStartedAt == null) {
+                    setProcessingStartedAt(Date.now());
+                  }
+                  void generateWithLlm(text, "detail");
+                }}
               />
             </>
           )}

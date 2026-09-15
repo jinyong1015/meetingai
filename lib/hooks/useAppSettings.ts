@@ -26,7 +26,7 @@ export function useAppSettings() {
 
     function onChanged(event: Event) {
       const detail = (event as CustomEvent<AppSettings>).detail;
-      if (detail?.sttProvider || detail?.llmProvider) {
+      if (detail?.id === "app") {
         setSettings(detail);
       } else {
         void getAppSettings().then((loaded) => {
@@ -47,5 +47,11 @@ export function useAppSettings() {
     ready,
     sttProvider: settings.sttProvider as SttProvider,
     llmProvider: settings.llmProvider as LlmProvider,
+    timezone: settings.timezone,
+    askAiAfterRecording: settings.askAiAfterRecording,
+    summaryPrompt: settings.summaryPrompt,
+    detailPrompt: settings.detailPrompt,
+    summaryPromptVersion: settings.summaryPromptVersion,
+    detailPromptVersion: settings.detailPromptVersion,
   };
 }

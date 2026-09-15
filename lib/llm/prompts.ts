@@ -56,12 +56,14 @@ export function buildMeetingContextBlock(input: LlmGenerateInput): string {
 }
 
 export function buildSummaryMessages(input: LlmGenerateInput) {
+  const userPrompt =
+    input.summaryPrompt?.trim() || DEFAULT_SUMMARY_USER_PROMPT;
   return [
     { role: "system" as const, content: LLM_SYSTEM_RULES },
     {
       role: "user" as const,
       content: [
-        DEFAULT_SUMMARY_USER_PROMPT,
+        userPrompt,
         "",
         buildMeetingContextBlock(input),
         "",
@@ -72,12 +74,13 @@ export function buildSummaryMessages(input: LlmGenerateInput) {
 }
 
 export function buildDetailMessages(input: LlmGenerateInput) {
+  const userPrompt = input.detailPrompt?.trim() || DEFAULT_DETAIL_USER_PROMPT;
   return [
     { role: "system" as const, content: LLM_SYSTEM_RULES },
     {
       role: "user" as const,
       content: [
-        DEFAULT_DETAIL_USER_PROMPT,
+        userPrompt,
         "",
         buildMeetingContextBlock(input),
         "",
